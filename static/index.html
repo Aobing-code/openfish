@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenFish - AI模型路由平台</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; padding: 20px; background: #1e293b; border-radius: 12px; }
+        .logo { font-size: 24px; font-weight: bold; color: #38bdf8; }
+        .logo span { color: #94a3b8; font-size: 14px; margin-left: 10px; }
+        .tabs { display: flex; gap: 10px; }
+        .tab { padding: 8px 16px; background: #334155; border: none; color: #94a3b8; border-radius: 6px; cursor: pointer; }
+        .tab.active { background: #38bdf8; color: #0f172a; }
+        .tab:hover { background: #475569; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px; }
+        .card { background: #1e293b; border-radius: 12px; padding: 20px; }
+        .card-title { font-size: 14px; color: #94a3b8; margin-bottom: 10px; }
+        .card-value { font-size: 36px; font-weight: bold; color: #f1f5f9; }
+        .card-value.qps { color: #38bdf8; }
+        .card-value.tokens { color: #a78bfa; }
+        .card-value.errors { color: #f87171; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #334155; }
+        th { color: #94a3b8; font-weight: 500; font-size: 13px; }
+        tr:hover { background: #334155; }
+        .badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; }
+        .badge-healthy { background: #166534; color: #86efac; }
+        .badge-unhealthy { background: #7f1d1d; color: #fca5a5; }
+        .badge-enabled { background: #1e40af; color: #93c5fd; }
+        .badge-disabled { background: #374151; color: #9ca3af; }
+        .latency-bar { width: 100px; height: 6px; background: #334155; border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 8px; }
+        .latency-fill { height: 100%; background: linear-gradient(90deg, #22c55e, #eab308, #ef4444); }
+        .chart-container { height: 200px; position: relative; margin-top: 20px; }
+        .chart { display: flex; align-items: flex-end; gap: 2px; height: 100%; }
+        .chart-bar { flex: 1; background: #38bdf8; border-radius: 2px 2px 0 0; min-height: 2px; }
+        .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 13px; }
+        .btn-primary { background: #38bdf8; color: #0f172a; }
+        .btn-primary:hover { background: #7dd3fc; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #f87171; }
+        .btn-sm { padding: 4px 8px; font-size: 12px; }
+        .section-title { font-size: 18px; font-weight: 600; margin: 30px 0 15px 0; color: #f1f5f9; display: flex; justify-content: space-between; align-items: center; }
+        .empty-state { text-align: center; padding: 40px; color: #64748b; }
+        .page { display: none; }
+        .page.active { display: block; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; color: #94a3b8; font-size: 13px; margin-bottom: 5px; }
+        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: #38bdf8; }
+        .form-group textarea { resize: vertical; min-height: 80px; font-family: monospace; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: #1e293b; padding: 24px; border-radius: 12px; width: 600px; max-width: 90%; max-height: 90vh; overflow-y: auto; }
+        .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+        .last-update { color: #64748b; font-size: 12px; margin-top: 20px; }
+        .hint { color: #64748b; font-size: 12px; margin-top: 4px; }
+
+        .sortable-list { list-style: none; padding: 0; margin: 0; }
+        .sortable-item { display: flex; align-items: center; gap: 10px; padding: 12px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; margin-bottom: 8px; cursor: grab; }
+        .sortable-item:hover { border-color: #38bdf8; }
+        .sortable-item.dragging { opacity: 0.5; }
+        .sortable-item .drag-handle { color: #64748b; cursor: grab; }
+        .sortable-item .item-name { flex: 1; font-weight: 500; }
+        .sortable-item .item-type { color: #94a3b8; font-size: 12px; }
+        .sortable-item .remove-btn { background: #7f1d1d; color: #fca5a5; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .available-backends { margin-top: 15px; padding: 15px; background: #1e293b; border-radius: 8px; }
+        .available-backend { display: inline-flex; padding: 6px 12px; background: #334155; border-radius: 6px; margin: 4px; cursor: pointer; font-size: 13px; }
+        .available-backend:hover { background: #475569; }
+
+        .model-item { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+        .model-item .model-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .model-item .remove-model { background: #7f1d1d; color: #fca5a5; border: none; padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">OpenFish <span>AI模型路由平台</span></div>
+            <div class="tabs">
+                <button class="tab active" onclick="switchPage('monitor')">监控</button>
+                <button class="tab" onclick="switchPage('config')">配置</button>
+                <button class="tab" onclick="switchPage('fallback')">回退顺序</button>
+            </div>
+        </div>
+
+        <!-- 监控页面 -->
+        <div id="page-monitor" class="page active">
+            <div class="grid">
+                <div class="card">
+                    <div class="card-title">总请求数</div>
+                    <div class="card-value" id="total-requests">0</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">QPS</div>
+                    <div class="card-value qps" id="qps">0</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">总Token数</div>
+                    <div class="card-value tokens" id="total-tokens">0</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">错误数</div>
+                    <div class="card-value errors" id="total-errors">0</div>
+                </div>
+            </div>
+
+            <div class="section-title">后端状态</div>
+            <div class="card">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>名称</th>
+                            <th>类型</th>
+                            <th>状态</th>
+                            <th>延迟</th>
+                            <th>请求数</th>
+                            <th>模型</th>
+                        </tr>
+                    </thead>
+                    <tbody id="backends-body">
+                        <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section-title">请求趋势</div>
+            <div class="card">
+                <div class="chart-container">
+                    <div class="chart" id="timeline-chart"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 配置页面 -->
+        <div id="page-config" class="page">
+            <div class="section-title">
+                后端管理
+                <button class="btn btn-primary" onclick="showModal('backend')">添加后端</button>
+            </div>
+            <div class="card">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>名称</th>
+                            <th>类型</th>
+                            <th>地址</th>
+                            <th>API Keys</th>
+                            <th>模型</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="config-backends-body">
+                        <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section-title">
+                路由配置
+                <button class="btn btn-primary" onclick="showModal('route')">添加路由</button>
+            </div>
+            <div class="card">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>名称</th>
+                            <th>策略</th>
+                            <th>模型</th>
+                            <th>故障转移</th>
+                            <th>回退顺序</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="config-routes-body">
+                        <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section-title">认证设置</div>
+            <div class="card">
+                <div class="form-group">
+                    <label>启用API Key认证</label>
+                    <select id="auth-enabled" onchange="updateAuth()">
+                        <option value="false">禁用</option>
+                        <option value="true">启用</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>API Keys (每行一个)</label>
+                    <textarea id="auth-keys" rows="4" onchange="updateAuth()"></textarea>
+                </div>
+            </div>
+        </div>
+
+        <!-- 回退顺序页面 -->
+        <div id="page-fallback" class="page">
+            <div class="section-title">拖拽配置回退顺序</div>
+            <p style="color:#94a3b8;margin-bottom:20px;">拖拽下方的后端来设置请求失败时的回退顺序。</p>
+            
+            <div class="card" style="margin-bottom: 20px;">
+                <div class="form-group">
+                    <label>选择路由</label>
+                    <select id="fallback-route-select" onchange="loadFallbackOrder()">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3 style="margin-bottom: 15px;">当前回退顺序</h3>
+                <ul id="fallback-list" class="sortable-list">
+                    <li class="empty-state">请先选择路由</li>
+                </ul>
+
+                <div class="available-backends">
+                    <h4 style="color:#94a3b8;font-size:13px;margin-bottom:10px;">可用后端（点击添加）</h4>
+                    <div id="available-backends-list"></div>
+                </div>
+
+                <div class="modal-actions" style="margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="saveFallbackOrder()">保存顺序</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="last-update" id="last-update">最后更新: --</div>
+    </div>
+
+    <!-- 后端编辑弹窗 -->
+    <div id="modal-backend" class="modal">
+        <div class="modal-content">
+            <div class="modal-title" id="backend-modal-title">添加后端</div>
+            <input type="hidden" id="backend-edit-name">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>名称</label>
+                    <input type="text" id="backend-name" placeholder="my-backend">
+                </div>
+                <div class="form-group">
+                    <label>类型</label>
+                    <select id="backend-type">
+                        <option value="ollama">Ollama</option>
+                        <option value="openai">OpenAI兼容</option>
+                        <option value="anthropic">Anthropic Claude</option>
+                        <option value="google">Google Gemini</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>地址</label>
+                <input type="text" id="backend-url" placeholder="http://localhost:11434">
+            </div>
+            <div class="form-group">
+                <label>API Keys（每行一个，自动轮询）</label>
+                <textarea id="backend-apikeys" rows="3" placeholder="sk-key1&#10;sk-key2&#10;sk-key3"></textarea>
+                <div class="hint">多个Key会自动轮询使用，实现负载均衡</div>
+            </div>
+            <div class="form-row-3">
+                <div class="form-group">
+                    <label>权重</label>
+                    <input type="number" id="backend-weight" value="10" min="1">
+                </div>
+                <div class="form-group">
+                    <label>优先级</label>
+                    <input type="number" id="backend-priority" value="1" min="1">
+                </div>
+                <div class="form-group">
+                    <label>超时(秒)</label>
+                    <input type="number" id="backend-timeout" value="60">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>验证SSL</label>
+                    <select id="backend-ssl">
+                        <option value="false">否</option>
+                        <option value="true">是</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>&nbsp;</label>
+                    <div style="padding:10px;color:#94a3b8;font-size:12px;">提供商级别速率限制（可选）</div>
+                </div>
+            </div>
+            <div class="form-row-3">
+                <div class="form-group">
+                    <label>RPM (每分钟请求数)</label>
+                    <input type="number" id="backend-rpm" value="0" min="0">
+                </div>
+                <div class="form-group">
+                    <label>TPM (每分钟Token数)</label>
+                    <input type="number" id="backend-tpm" value="0" min="0">
+                </div>
+                <div class="form-group">
+                    <label>并发数</label>
+                    <input type="number" id="backend-concurrent" value="0" min="0">
+                </div>
+            </div>
+
+            <div class="section-title" style="margin-top:20px;">
+                模型配置
+                <button class="btn btn-sm btn-primary" onclick="addModel()">添加模型</button>
+            </div>
+            <div id="models-container"></div>
+
+            <div class="modal-actions">
+                <button class="btn" style="background:#334155;color:#e2e8f0" onclick="closeModal('backend')">取消</button>
+                <button class="btn btn-primary" onclick="saveBackend()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 路由编辑弹窗 -->
+    <div id="modal-route" class="modal">
+        <div class="modal-content">
+            <div class="modal-title">添加路由</div>
+            <div class="form-group">
+                <label>名称</label>
+                <input type="text" id="route-name" placeholder="default">
+            </div>
+            <div class="form-group">
+                <label>路由策略</label>
+                <select id="route-strategy">
+                    <option value="latency">最低延迟</option>
+                    <option value="round_robin">轮询</option>
+                    <option value="random">随机</option>
+                    <option value="weighted">加权</option>
+                    <option value="priority">优先级</option>
+                    <option value="custom">自定义回退</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>模型列表 (逗号分隔, *表示全部)</label>
+                <input type="text" id="route-models" value="*">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>故障转移</label>
+                    <select id="route-failover">
+                        <option value="true">启用</option>
+                        <option value="false">禁用</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>健康检查间隔(秒)</label>
+                    <input type="number" id="route-interval" value="30">
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" style="background:#334155;color:#e2e8f0" onclick="closeModal('route')">取消</button>
+                <button class="btn btn-primary" onclick="saveRoute()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentConfig = null;
+        let currentFallbackOrder = [];
+        let editingModels = [];
+
+        function switchPage(page) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('page-' + page).classList.add('active');
+            event.target.classList.add('active');
+            if (page === 'config' || page === 'fallback') loadConfig();
+        }
+
+        function showModal(type, name = null) {
+            document.getElementById('modal-' + type).classList.add('active');
+            if (type === 'backend') {
+                document.getElementById('backend-modal-title').textContent = name ? '编辑后端' : '添加后端';
+                document.getElementById('backend-edit-name').value = name || '';
+                editingModels = [];
+                
+                if (name && currentConfig) {
+                    const b = currentConfig.backends.find(x => x.name === name);
+                    if (b) {
+                        document.getElementById('backend-name').value = b.name;
+                        document.getElementById('backend-type').value = b.type;
+                        document.getElementById('backend-url').value = b.url;
+                        document.getElementById('backend-apikeys').value = (b.api_keys || []).join('\n');
+                        document.getElementById('backend-weight').value = b.weight;
+                        document.getElementById('backend-priority').value = b.priority;
+                        document.getElementById('backend-timeout').value = b.timeout;
+                        document.getElementById('backend-ssl').value = b.verify_ssl.toString();
+                        document.getElementById('backend-rpm').value = b.rate_limit?.rpm || 0;
+                        document.getElementById('backend-tpm').value = b.rate_limit?.tpm || 0;
+                        document.getElementById('backend-concurrent').value = b.rate_limit?.concurrent || 0;
+                        editingModels = b.models.map(m => ({...m, rate_limit: m.rate_limit || {rpm:0,tpm:0,concurrent:0}}));
+                    }
+                } else {
+                    document.getElementById('backend-name').value = '';
+                    document.getElementById('backend-type').value = 'ollama';
+                    document.getElementById('backend-url').value = '';
+                    document.getElementById('backend-apikeys').value = '';
+                    document.getElementById('backend-weight').value = '10';
+                    document.getElementById('backend-priority').value = '1';
+                    document.getElementById('backend-timeout').value = '60';
+                    document.getElementById('backend-ssl').value = 'false';
+                    document.getElementById('backend-rpm').value = '0';
+                    document.getElementById('backend-tpm').value = '0';
+                    document.getElementById('backend-concurrent').value = '0';
+                }
+                renderModels();
+            }
+        }
+
+        function closeModal(type) {
+            document.getElementById('modal-' + type).classList.remove('active');
+        }
+
+        function addModel() {
+            editingModels.push({
+                id: '',
+                name: '',
+                context_length: 4096,
+                enabled: true,
+                rate_limit: {rpm: 0, tpm: 0, concurrent: 0}
+            });
+            renderModels();
+        }
+
+        function removeModel(index) {
+            editingModels.splice(index, 1);
+            renderModels();
+        }
+
+        function renderModels() {
+            const container = document.getElementById('models-container');
+            if (editingModels.length === 0) {
+                container.innerHTML = '<div class="empty-state">暂无模型，点击上方添加</div>';
+                return;
+            }
+            container.innerHTML = editingModels.map((m, i) => `
+                <div class="model-item">
+                    <div class="model-header">
+                        <strong>模型 ${i + 1}</strong>
+                        <button class="remove-model" onclick="removeModel(${i})">删除</button>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>模型ID（请求时使用）</label>
+                            <input type="text" value="${m.id}" onchange="editingModels[${i}].id=this.value" placeholder="gpt-4">
+                        </div>
+                        <div class="form-group">
+                            <label>实际模型名称</label>
+                            <input type="text" value="${m.name}" onchange="editingModels[${i}].name=this.value" placeholder="gpt-4-turbo">
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>上下文长度</label>
+                            <input type="number" value="${m.context_length}" onchange="editingModels[${i}].context_length=parseInt(this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>RPM</label>
+                            <input type="number" value="${m.rate_limit?.rpm || 0}" onchange="editingModels[${i}].rate_limit.rpm=parseInt(this.value)" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label>TPM</label>
+                            <input type="number" value="${m.rate_limit?.tpm || 0}" onchange="editingModels[${i}].rate_limit.tpm=parseInt(this.value)" min="0">
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                currentConfig = await res.json();
+                renderConfigBackends(currentConfig.backends);
+                renderConfigRoutes(currentConfig.routes);
+                renderFallbackRouteSelect(currentConfig.routes);
+                document.getElementById('auth-enabled').value = currentConfig.auth.enabled.toString();
+                document.getElementById('auth-keys').value = currentConfig.auth.api_keys.join('\n');
+            } catch (e) {
+                console.error('Load config error:', e);
+            }
+        }
+
+        function renderConfigBackends(backends) {
+            const tbody = document.getElementById('config-backends-body');
+            if (!backends || backends.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无后端</td></tr>';
+                return;
+            }
+            const typeLabels = { ollama: 'Ollama', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini' };
+            tbody.innerHTML = backends.map(b => `
+                <tr>
+                    <td><strong>${b.name}</strong></td>
+                    <td>${typeLabels[b.type] || b.type}</td>
+                    <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${b.url}</td>
+                    <td>${b.api_keys?.length || 0}个</td>
+                    <td>${b.models?.length || 0}个</td>
+                    <td><span class="badge ${b.enabled ? 'badge-enabled' : 'badge-disabled'}" onclick="toggleBackend('${b.name}')">${b.enabled ? '启用' : '禁用'}</span></td>
+                    <td>
+                        <button class="btn btn-sm btn-primary" onclick="showModal('backend','${b.name}')">编辑</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteBackend('${b.name}')">删除</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function renderConfigRoutes(routes) {
+            const tbody = document.getElementById('config-routes-body');
+            if (!routes || routes.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无路由</td></tr>';
+                return;
+            }
+            tbody.innerHTML = routes.map(r => `
+                <tr>
+                    <td><strong>${r.name}</strong></td>
+                    <td>${r.strategy}</td>
+                    <td>${r.models.join(', ')}</td>
+                    <td>${r.failover ? '启用' : '禁用'}</td>
+                    <td>${r.fallback_order?.length > 0 ? r.fallback_order.join(' → ') : '默认'}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="deleteRoute('${r.name}')">删除</button></td>
+                </tr>
+            `).join('');
+        }
+
+        function renderFallbackRouteSelect(routes) {
+            const select = document.getElementById('fallback-route-select');
+            if (!routes || routes.length === 0) {
+                select.innerHTML = '<option value="">暂无路由</option>';
+                return;
+            }
+            select.innerHTML = routes.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
+            loadFallbackOrder();
+        }
+
+        async function loadFallbackOrder() {
+            const routeName = document.getElementById('fallback-route-select').value;
+            if (!routeName || !currentConfig) {
+                document.getElementById('fallback-list').innerHTML = '<li class="empty-state">请先选择路由</li>';
+                document.getElementById('available-backends-list').innerHTML = '';
+                return;
+            }
+            const route = currentConfig.routes.find(r => r.name === routeName);
+            const backends = currentConfig.backends.filter(b => b.enabled);
+            currentFallbackOrder = route?.fallback_order || [];
+            renderFallbackList(backends);
+            renderAvailableBackends(backends);
+        }
+
+        function renderFallbackList(backends) {
+            const list = document.getElementById('fallback-list');
+            if (currentFallbackOrder.length === 0) {
+                list.innerHTML = '<li class="empty-state">暂无自定义顺序</li>';
+                return;
+            }
+            const typeLabels = { ollama: 'Ollama', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini' };
+            list.innerHTML = currentFallbackOrder.map((name, index) => {
+                const backend = backends.find(b => b.name === name);
+                return `
+                    <li class="sortable-item" draggable="true" data-name="${name}" data-index="${index}">
+                        <span class="drag-handle">⋮⋮</span>
+                        <span class="item-name">${name}</span>
+                        <span class="item-type">${backend ? typeLabels[backend.type] || backend.type : '未知'}</span>
+                        <button class="remove-btn" onclick="removeFromFallback('${name}')">移除</button>
+                    </li>
+                `;
+            }).join('');
+            initDragAndDrop();
+        }
+
+        function renderAvailableBackends(backends) {
+            const container = document.getElementById('available-backends-list');
+            const available = backends.filter(b => !currentFallbackOrder.includes(b.name));
+            if (available.length === 0) {
+                container.innerHTML = '<span class="empty-state">所有后端已添加</span>';
+                return;
+            }
+            const typeLabels = { ollama: 'Ollama', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini' };
+            container.innerHTML = available.map(b => `
+                <span class="available-backend" onclick="addToFallback('${b.name}')">+ ${b.name} (${typeLabels[b.type] || b.type})</span>
+            `).join('');
+        }
+
+        function addToFallback(name) {
+            if (!currentFallbackOrder.includes(name)) {
+                currentFallbackOrder.push(name);
+                loadFallbackOrder();
+            }
+        }
+
+        function removeFromFallback(name) {
+            currentFallbackOrder = currentFallbackOrder.filter(n => n !== name);
+            loadFallbackOrder();
+        }
+
+        function initDragAndDrop() {
+            const list = document.getElementById('fallback-list');
+            const items = list.querySelectorAll('.sortable-item');
+            items.forEach(item => {
+                item.addEventListener('dragstart', function() { this.classList.add('dragging'); });
+                item.addEventListener('dragend', function() { this.classList.remove('dragging'); });
+                item.addEventListener('dragover', function(e) { e.preventDefault(); });
+                item.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    const dragging = list.querySelector('.dragging');
+                    if (dragging !== this) {
+                        const fromIndex = parseInt(dragging.dataset.index);
+                        const toIndex = parseInt(this.dataset.index);
+                        const item = currentFallbackOrder.splice(fromIndex, 1)[0];
+                        currentFallbackOrder.splice(toIndex, 0, item);
+                        loadFallbackOrder();
+                    }
+                });
+            });
+        }
+
+        async function saveFallbackOrder() {
+            const routeName = document.getElementById('fallback-route-select').value;
+            if (!routeName) { alert('请先选择路由'); return; }
+            try {
+                const res = await fetch(`/api/config/routes/${routeName}/fallback-order`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ fallback_order: currentFallbackOrder })
+                });
+                if (res.ok) { alert('保存成功'); loadConfig(); }
+                else { const err = await res.json(); alert(err.detail || '保存失败'); }
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+
+        async function saveBackend() {
+            const editName = document.getElementById('backend-edit-name').value;
+            const apiKeysStr = document.getElementById('backend-apikeys').value;
+            const apiKeys = apiKeysStr.split('\n').map(s => s.trim()).filter(s => s);
+            
+            const data = {
+                name: document.getElementById('backend-name').value,
+                type: document.getElementById('backend-type').value,
+                url: document.getElementById('backend-url').value,
+                api_keys: apiKeys,
+                weight: parseInt(document.getElementById('backend-weight').value),
+                enabled: true,
+                timeout: parseInt(document.getElementById('backend-timeout').value),
+                verify_ssl: document.getElementById('backend-ssl').value === 'true',
+                priority: parseInt(document.getElementById('backend-priority').value),
+                rate_limit: {
+                    rpm: parseInt(document.getElementById('backend-rpm').value),
+                    tpm: parseInt(document.getElementById('backend-tpm').value),
+                    concurrent: parseInt(document.getElementById('backend-concurrent').value)
+                },
+                models: editingModels.map(m => ({
+                    id: m.id,
+                    name: m.name,
+                    context_length: m.context_length,
+                    enabled: m.enabled,
+                    rate_limit: m.rate_limit || {rpm:0, tpm:0, concurrent:0}
+                }))
+            };
+
+            try {
+                const url = editName ? '/api/config/backends/' + editName : '/api/config/backends';
+                const method = editName ? 'PUT' : 'POST';
+                const res = await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+                if (res.ok) { closeModal('backend'); loadConfig(); refreshData(); }
+                else { const err = await res.json(); alert(err.detail || '保存失败'); }
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+
+        async function deleteBackend(name) {
+            if (!confirm('确定删除后端 ' + name + '?')) return;
+            try { await fetch('/api/config/backends/' + name, { method: 'DELETE' }); loadConfig(); refreshData(); }
+            catch (e) { alert('删除失败'); }
+        }
+
+        async function toggleBackend(name) {
+            try { await fetch('/api/config/backends/' + name + '/toggle', { method: 'PUT' }); loadConfig(); refreshData(); }
+            catch (e) { alert('操作失败'); }
+        }
+
+        async function saveRoute() {
+            const data = {
+                name: document.getElementById('route-name').value,
+                strategy: document.getElementById('route-strategy').value,
+                models: document.getElementById('route-models').value.split(',').map(s => s.trim()),
+                failover: document.getElementById('route-failover').value === 'true',
+                health_check_interval: parseInt(document.getElementById('route-interval').value),
+                fallback_order: [],
+                fallback_rules: []
+            };
+            try {
+                const res = await fetch('/api/config/routes', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+                if (res.ok) { closeModal('route'); loadConfig(); }
+                else { const err = await res.json(); alert(err.detail || '保存失败'); }
+            } catch (e) { alert('请求失败'); }
+        }
+
+        async function deleteRoute(name) {
+            if (!confirm('确定删除路由 ' + name + '?')) return;
+            try { await fetch('/api/config/routes/' + name, { method: 'DELETE' }); loadConfig(); }
+            catch (e) { alert('删除失败'); }
+        }
+
+        async function updateAuth() {
+            const data = {
+                enabled: document.getElementById('auth-enabled').value === 'true',
+                api_keys: document.getElementById('auth-keys').value.split('\n').filter(k => k.trim())
+            };
+            try { await fetch('/api/config/auth', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }); }
+            catch (e) { console.error('Update auth error:', e); }
+        }
+
+        async function refreshData() {
+            try {
+                const [status, timeline] = await Promise.all([
+                    fetch('/api/monitor/status').then(r => r.json()),
+                    fetch('/api/monitor/timeline?minutes=30').then(r => r.json())
+                ]);
+                if (status?.stats) {
+                    document.getElementById('total-requests').textContent = status.stats.total_requests || 0;
+                    document.getElementById('qps').textContent = (status.stats.qps || 0).toFixed(2);
+                    document.getElementById('total-tokens').textContent = status.stats.total_tokens || 0;
+                    document.getElementById('total-errors').textContent = status.stats.total_errors || 0;
+                }
+                const tbody = document.getElementById('backends-body');
+                if (status?.backends?.length > 0) {
+                    const typeLabels = { ollama: 'Ollama', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini' };
+                    tbody.innerHTML = status.backends.map(b => `
+                        <tr>
+                            <td><strong>${b.name}</strong></td>
+                            <td>${typeLabels[b.type] || b.type}</td>
+                            <td><span class="badge ${b.healthy ? 'badge-healthy' : 'badge-unhealthy'}">${b.healthy ? '正常' : '异常'}</span></td>
+                            <td><div class="latency-bar"><div class="latency-fill" style="width:${Math.min(b.latency*100,100)}%"></div></div>${b.latency.toFixed(3)}s</td>
+                            <td>${b.total_requests}</td>
+                            <td>${b.models?.join(', ') || ''}</td>
+                        </tr>
+                    `).join('');
+                } else { tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无后端</td></tr>'; }
+                const chart = document.getElementById('timeline-chart');
+                if (timeline?.length > 0) {
+                    const max = Math.max(...timeline.map(d => d.requests), 1);
+                    chart.innerHTML = timeline.map(d => `<div class="chart-bar" style="height:${(d.requests/max)*100}%" title="${d.time}: ${d.requests}"></div>`).join('');
+                } else { chart.innerHTML = '<div class="empty-state">暂无数据</div>'; }
+                document.getElementById('last-update').textContent = '最后更新: ' + new Date().toLocaleTimeString();
+            } catch (e) { console.error('Refresh error:', e); }
+        }
+
+        refreshData();
+        setInterval(refreshData, 5000);
+    </script>
+</body>
+</html>

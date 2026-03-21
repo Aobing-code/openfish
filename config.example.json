@@ -1,0 +1,109 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "workers": 1,
+    "log_level": "info"
+  },
+  "backends": [
+    {
+      "name": "ollama-local",
+      "type": "ollama",
+      "url": "http://localhost:11434",
+      "api_keys": [],
+      "weight": 10,
+      "enabled": true,
+      "timeout": 120,
+      "verify_ssl": false,
+      "models": [
+        {"id": "llama3", "name": "llama3", "context_length": 8192, "enabled": true, "rate_limit": {"rpm": 30, "tpm": 50000, "concurrent": 3}},
+        {"id": "qwen2", "name": "qwen2", "context_length": 32768, "enabled": true, "rate_limit": {"rpm": 20, "tpm": 80000, "concurrent": 2}},
+        {"id": "codellama", "name": "codellama", "context_length": 16384, "enabled": true, "rate_limit": {"rpm": 15, "tpm": 40000, "concurrent": 2}}
+      ],
+      "rate_limit": {"rpm": 0, "tpm": 0, "concurrent": 10},
+      "priority": 1
+    },
+    {
+      "name": "openai-gpt4",
+      "type": "openai",
+      "url": "https://api.openai.com/v1",
+      "api_keys": ["sk-key1", "sk-key2", "sk-key3"],
+      "weight": 5,
+      "enabled": false,
+      "timeout": 60,
+      "verify_ssl": true,
+      "models": [
+        {"id": "gpt-4", "name": "gpt-4-turbo", "context_length": 128000, "enabled": true, "rate_limit": {"rpm": 100, "tpm": 200000, "concurrent": 5}},
+        {"id": "gpt-4-mini", "name": "gpt-4o-mini", "context_length": 16384, "enabled": true, "rate_limit": {"rpm": 500, "tpm": 800000, "concurrent": 10}}
+      ],
+      "rate_limit": {"rpm": 1000, "tpm": 1000000, "concurrent": 20},
+      "priority": 2
+    },
+    {
+      "name": "anthropic-claude",
+      "type": "anthropic",
+      "url": "https://api.anthropic.com",
+      "api_keys": ["sk-ant-key1", "sk-ant-key2"],
+      "weight": 5,
+      "enabled": false,
+      "timeout": 60,
+      "verify_ssl": true,
+      "models": [
+        {"id": "claude-sonnet", "name": "claude-3-5-sonnet-20241022", "context_length": 200000, "enabled": true, "rate_limit": {"rpm": 50, "tpm": 100000, "concurrent": 3}},
+        {"id": "claude-haiku", "name": "claude-3-5-haiku-20241022", "context_length": 200000, "enabled": true, "rate_limit": {"rpm": 200, "tpm": 400000, "concurrent": 5}}
+      ],
+      "rate_limit": {"rpm": 500, "tpm": 500000, "concurrent": 10},
+      "priority": 2
+    },
+    {
+      "name": "google-gemini",
+      "type": "google",
+      "url": "https://generativelanguage.googleapis.com",
+      "api_keys": ["gemini-key1"],
+      "weight": 5,
+      "enabled": false,
+      "timeout": 60,
+      "verify_ssl": true,
+      "models": [
+        {"id": "gemini-pro", "name": "gemini-1.5-pro", "context_length": 1000000, "enabled": true, "rate_limit": {"rpm": 60, "tpm": 1000000, "concurrent": 5}},
+        {"id": "gemini-flash", "name": "gemini-1.5-flash", "context_length": 1000000, "enabled": true, "rate_limit": {"rpm": 100, "tpm": 2000000, "concurrent": 10}}
+      ],
+      "rate_limit": {"rpm": 200, "tpm": 3000000, "concurrent": 15},
+      "priority": 3
+    }
+  ],
+  "routes": [
+    {
+      "name": "default",
+      "models": ["*"],
+      "strategy": "latency",
+      "failover": true,
+      "health_check_interval": 30,
+      "fallback_order": ["ollama-local", "openai-gpt4", "anthropic-claude"],
+      "fallback_rules": [
+        {
+          "name": "rate-limit-fallback",
+          "condition": "rate_limit",
+          "threshold": 0,
+          "backends": ["openai-gpt4", "anthropic-claude"]
+        },
+        {
+          "name": "error-fallback",
+          "condition": "error",
+          "threshold": 3,
+          "backends": ["anthropic-claude", "google-gemini"]
+        },
+        {
+          "name": "latency-fallback",
+          "condition": "latency",
+          "threshold": 10.0,
+          "backends": ["anthropic-claude"]
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "enabled": false,
+    "api_keys": ["sk-openfish"]
+  }
+}

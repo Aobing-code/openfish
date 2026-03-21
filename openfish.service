@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenFish - AI Model Router
+After=network.target
+
+[Service]
+Type=simple
+User=openfish
+Group=openfish
+WorkingDirectory=/opt/openfish
+ExecStart=/opt/openfish/venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

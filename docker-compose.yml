@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  openfish:
+    build: .
+    image: openfish:latest
+    container_name: openfish
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.json:/app/config.json
+    restart: unless-stopped
