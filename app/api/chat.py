@@ -1,6 +1,7 @@
 """Chat Completions API端点"""
 import time
 import json
+import asyncio
 from typing import Dict, List, Any, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -150,19 +151,16 @@ async def chat_completions(request: Request):
     for target in fallback_targets:
         provider_name, model_id = parse_fallback_target(target)
         
-        # 检查后端是否存在
         if provider_name not in app.backends:
             last_error = f"后端 {provider_name} 不存在"
             continue
         
         backend = app.backends[provider_name]
         
-        # 检查健康状态
         if not backend.status.healthy:
             last_error = f"{provider_name} 不健康"
             continue
         
-        # 检查是否被速率限制临时禁用
         if hc.is_rate_limited(provider_name, model_id or ""):
             last_error = f"{provider_name}/{model_id or '*'} 速率限制冷却中"
             tried.append(target)
@@ -172,7 +170,6 @@ async def chat_completions(request: Request):
         if not backend_config:
             continue
         
-        # 查找模型
         model_config = None
         actual_model = model_id
         if model_id:
@@ -193,58 +190,47 @@ async def chat_completions(request: Request):
             last_error = f"{provider_name} 未找到模型 {model_id}"
             continue
         
-        # 检查上下文长度
         if model_config.context_length > 0 and estimated_tokens > model_config.context_length:
             last_error = f"{model_id} 上下文不足 ({estimated_tokens} > {model_config.context_length})"
             tried.append(target)
             continue
         
-        # 检查速率限制
         if not await rate_limiter.can_request(provider_name, estimated_tokens):
             last_error = f"{provider_name} 速率限制"
-            # 标记为速率限制，60秒后恢复
             hc.mark_rate_limited(provider_name, "", 60)
             tried.append(target)
             continue
         
-        # 尝试请求
         await rate_limiter.acquire(provider_name, estimated_tokens)
         start_time = time.time()
+        backend_timeout = backend_config.timeout if backend_config else 60
         
         try:
-            # 设置单个后端的超时时间（使用后端配置的timeout）
-            backend_timeout = backend_config.timeout if backend_config else 60
-            
             if stream:
-                need_fallback = len(tried) > 0
+                # 流式响应 - 使用生成器处理回退
                 return StreamingResponse(
                     stream_with_fallback(
-                        backend, actual_model, messages, request_params, start_time,
-                        provider_name, model_id or "", last_error if need_fallback else None
+                        app, backend, actual_model, messages, request_params,
+                        provider_name, model_id or "", last_error, tried, fallback_targets,
+                        estimated_tokens, backend_timeout, raw_model
                     ),
                     media_type="text/event-stream"
                 )
             else:
-                # 使用asyncio.wait_for添加超时控制
-                import asyncio
-                try:
-                    result = await asyncio.wait_for(
-                        backend.chat_completion(
-                            model=actual_model,
-                            messages=messages,
-                            stream=False,
-                            **request_params
-                        ),
-                        timeout=backend_timeout
-                    )
-                except asyncio.TimeoutError:
-                    raise Exception(f"请求超时 ({backend_timeout}s)")
+                result = await asyncio.wait_for(
+                    backend.chat_completion(
+                        model=actual_model,
+                        messages=messages,
+                        stream=False,
+                        **request_params
+                    ),
+                    timeout=backend_timeout
+                )
                 
                 latency = time.time() - start_time
                 tokens = result.get("usage", {}).get("total_tokens", 0)
                 await stats.record(raw_model, provider_name, tokens, latency, True)
                 
-                # 如果有回退，注入信息
                 if tried and last_error:
                     if "choices" in result and result["choices"]:
                         choice = result["choices"][0]
@@ -261,7 +247,6 @@ async def chat_completions(request: Request):
             await stats.record(raw_model, provider_name, 0, latency, False)
             last_error = f"{provider_name}/{model_id} 请求失败: {str(e)}"
             logger.error(f"Chat error for {target}: {e}")
-            # 标记为不健康
             backend.update_status(False, latency)
             tried.append(target)
         finally:
@@ -271,34 +256,96 @@ async def chat_completions(request: Request):
 
 
 async def stream_with_fallback(
-    backend, model: str, messages: List[Dict], params: Dict, start_time: float,
-    provider: str, model_id: str, fail_reason: Optional[str]
+    app, backend, model: str, messages: List[Dict], params: Dict,
+    provider: str, model_id: str, fail_reason: Optional[str],
+    tried: List[str], fallback_targets: List[str],
+    estimated_tokens: int, timeout: int, raw_model: str
 ):
-    """流式响应（带回退信息）"""
-    try:
-        if fail_reason:
-            fallback_msg = f"[openfish]回退到 {provider}/{model_id}，失败原因: {fail_reason}[openfish-end]\n\n"
-            chunk = {
-                "id": "chatcmpl-openfish",
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [{"index": 0, "delta": {"content": fallback_msg}, "finish_reason": None}]
-            }
-            yield f"data: {json.dumps(chunk)}\n\n"
+    """流式响应（支持回退）"""
+    hc = get_health_checker()
+    current_backend = backend
+    current_provider = provider
+    current_model = model_id
+    current_fail_reason = fail_reason
+    
+    # 从当前后端之后开始尝试
+    start_idx = 0
+    for i, t in enumerate(fallback_targets):
+        p, m = parse_fallback_target(t)
+        if p == provider:
+            start_idx = i + 1
+            break
+    
+    while True:
+        start_time = time.time()
+        await rate_limiter.acquire(current_provider, estimated_tokens)
         
-        async for chunk in backend.chat_completion_stream(model=model, messages=messages, **params):
-            yield f"data: {json.dumps(chunk)}\n\n"
-
-        yield "data: [DONE]\n\n"
-
-        latency = time.time() - start_time
-        await stats.record(model, backend.name, 0, latency, True)
-
-    except Exception as e:
-        latency = time.time() - start_time
-        await stats.record(model, backend.name, 0, latency, False)
-        logger.error(f"Stream error: {e}")
-        yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'server_error'}})}\n\n"
-    finally:
-        rate_limiter.release(backend.name)
+        try:
+            # 发送回退信息
+            if current_fail_reason:
+                fallback_msg = f"[openfish]回退到 {current_provider}/{current_model}，失败原因: {current_fail_reason}[openfish-end]\n\n"
+                chunk = {
+                    "id": "chatcmpl-openfish",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {"content": fallback_msg}, "finish_reason": None}]
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+            
+            # 尝试流式响应
+            async for chunk in current_backend.chat_completion_stream(model=current_model, messages=messages, **params):
+                yield f"data: {json.dumps(chunk)}\n\n"
+            
+            yield "data: [DONE]\n\n"
+            
+            latency = time.time() - start_time
+            await stats.record(raw_model, current_provider, 0, latency, True)
+            return  # 成功，退出
+            
+        except Exception as e:
+            latency = time.time() - start_time
+            await stats.record(raw_model, current_provider, 0, latency, False)
+            current_backend.update_status(False, latency)
+            logger.error(f"Stream error for {current_provider}: {e}")
+            
+            # 尝试下一个后端
+            found_next = False
+            for i in range(start_idx, len(fallback_targets)):
+                target = fallback_targets[i]
+                provider_name, model_id_next = parse_fallback_target(target)
+                
+                if provider_name not in app.backends:
+                    continue
+                next_backend = app.backends[provider_name]
+                if not next_backend.status.healthy:
+                    continue
+                if hc.is_rate_limited(provider_name, model_id_next or ""):
+                    continue
+                
+                next_config = app.config.get_backend_by_name(provider_name)
+                if not next_config:
+                    continue
+                
+                actual_model_next = model_id_next
+                if model_id_next:
+                    for m in next_config.models:
+                        if m.id == model_id_next:
+                            actual_model_next = m.name
+                            break
+                
+                current_backend = next_backend
+                current_provider = provider_name
+                current_model = actual_model_next or model_id_next or ""
+                current_fail_reason = f"{provider}/{model_id} 请求失败: {str(e)}"
+                start_idx = i + 1
+                found_next = True
+                break
+            
+            if not found_next:
+                # 没有更多后端可用
+                error_chunk = {"error": {"message": str(e), "type": "server_error"}}
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+                return
+        finally:
+            rate_limiter.release(provider if not found_next else current_provider)
