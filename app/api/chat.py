@@ -11,91 +11,38 @@ logger = logging.getLogger("openfish.api.chat")
 
 router = APIRouter()
 
-# 上下文升级追踪器
-# 格式: {session_key: {"count": int, "original_model": str}}
-context_upgrade_tracker: Dict[str, Dict] = {}
-
-# 追踪器清理间隔（秒）
-TRACKER_CLEANUP_INTERVAL = 300
-_last_cleanup = time.time()
-
 
 def get_app():
     from app import main as app_main
     return app_main
 
 
-def get_session_key(request: Request) -> str:
-    """获取会话标识（使用API Key或IP）"""
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        return f"key:{auth[7:]}"
-    return f"ip:{request.client.host if request.client else 'unknown'}"
+def estimate_tokens(messages: List[Dict]) -> int:
+    """估算消息的token数量"""
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for part in content:
+                if part.get("type") == "text":
+                    total += len(part.get("text", "")) // 4
+                elif part.get("type") in ["image_url", "image_base64"]:
+                    total += 1000
+        else:
+            total += len(str(content)) // 4
+    return total
 
 
-def cleanup_tracker():
-    """清理过期的追踪记录"""
-    global _last_cleanup, context_upgrade_tracker
-    now = time.time()
-    if now - _last_cleanup > TRACKER_CLEANUP_INTERVAL:
-        # 清理超过5分钟的记录
-        expired = [k for k, v in context_upgrade_tracker.items() 
-                   if now - v.get("timestamp", 0) > 300]
-        for k in expired:
-            del context_upgrade_tracker[k]
-        _last_cleanup = now
-
-
-def parse_model_field(model: str, config) -> Tuple[str, Optional[object]]:
+def parse_fallback_target(target: str) -> Tuple[str, Optional[str]]:
     """
-    解析model字段
-    返回: (实际model_id, 路由配置)
+    解析回退目标
+    格式: "provider/model" 或 "provider" 或 "model"
+    返回: (provider_name, model_id)
     """
-    if model.startswith("back-"):
-        route_name = model[5:]
-        for route in config.routes:
-            if route.name == route_name:
-                return "*", route
-        return "*", config.routes[0] if config.routes else None
-    else:
-        return model, config.routes[0] if config.routes else None
-
-
-def find_backends_for_model(model_id: str, config, backends: dict) -> List:
-    """查找支持指定模型的后端"""
-    if model_id == "*":
-        return [b for b in backends.values() if b.status.healthy]
-    
-    available = []
-    for backend in backends.values():
-        if not backend.status.healthy:
-            continue
-        backend_config = config.get_backend_by_name(backend.name)
-        if backend_config:
-            for m in backend_config.models:
-                if m.id == "*" or m.id == model_id:
-                    if m.enabled:
-                        available.append(backend)
-                        break
-    return available
-
-
-def find_larger_context_model(app, current_model_id: str, current_context: int) -> Optional[Tuple[str, str, int]]:
-    """查找更大context的模型，返回 (model_id, backend_name, context_length)"""
-    best_model = None
-    best_context = current_context
-
-    for backend in app.backends.values():
-        if not backend.status.healthy:
-            continue
-        backend_config = app.config.get_backend_by_name(backend.name)
-        if backend_config:
-            for m in backend_config.models:
-                if m.enabled and m.context_length > best_context:
-                    best_model = (m.id, backend.name, m.context_length)
-                    best_context = m.context_length
-
-    return best_model
+    if "/" in target:
+        parts = target.split("/", 1)
+        return parts[0], parts[1]
+    return target, None
 
 
 def extract_request_params(body: Dict) -> Dict[str, Any]:
@@ -110,14 +57,16 @@ def extract_request_params(body: Dict) -> Dict[str, Any]:
     return params
 
 
+def inject_fallback_info(content: str, provider: str, model: str, reason: str) -> str:
+    """在内容前注入回退信息"""
+    fallback_msg = f"[openfish]回退到 {provider}/{model}，失败原因: {reason}[openfish-end]\n\n"
+    return fallback_msg + (content or "")
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """OpenAI兼容的chat/completions端点"""
     app = get_app()
-    session_key = get_session_key(request)
-
-    # 清理过期追踪记录
-    cleanup_tracker()
 
     try:
         body = await request.json()
@@ -133,193 +82,186 @@ async def chat_completions(request: Request):
     if not messages:
         raise HTTPException(status_code=400, detail="Messages are required")
 
-    # 解析model字段
-    model_id, route = parse_model_field(raw_model, app.config)
-
-    # 查找可用后端
-    if model_id == "*" and route:
-        available_backends = []
-        for backend_name in route.fallback_order if route.fallback_order else [b.name for b in app.config.backends if b.enabled]:
-            if backend_name in app.backends and app.backends[backend_name].status.healthy:
-                available_backends.append(app.backends[backend_name])
-        if not available_backends:
-            available_backends = [b for b in app.backends.values() if b.status.healthy]
-    else:
-        available_backends = find_backends_for_model(model_id, app.config, app.backends)
-
-    if not available_backends:
-        raise HTTPException(
-            status_code=503,
-            detail=f"No healthy backend available for model: {raw_model}"
-        )
-
-    # 获取路由配置
-    strategy = route.strategy if route else "latency"
-    fallback_order = route.fallback_order if route else []
-    fallback_rules = route.fallback_rules if route else []
-
-    # 估算tokens
-    estimated_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 4
-
-    # 检查是否需要自动升级到更大context的模型
-    tracker_info = context_upgrade_tracker.get(session_key)
-    if tracker_info and tracker_info.get("count", 0) == 1:
-        # 第二次请求：自动路由到更大context的模型
-        larger_model = tracker_info.get("upgrade_to")
-        if larger_model:
-            model_id = larger_model[0]
-            # 更新追踪状态
-            tracker_info["count"] = 2
-            tracker_info["timestamp"] = time.time()
-            # 重新查找后端
-            available_backends = find_backends_for_model(model_id, app.config, app.backends)
-    elif tracker_info and tracker_info.get("count", 0) >= 2:
-        # 第三次请求：恢复原模型，清除追踪
-        model_id = tracker_info.get("original_model", model_id)
-        del context_upgrade_tracker[session_key]
-        available_backends = find_backends_for_model(model_id, app.config, app.backends)
-
-    # 检查上下文长度是否超过80%
-    backend_config = app.config.get_backend_by_name(available_backends[0].name) if available_backends else None
-    current_context = 0
-    
-    if backend_config and model_id != "*":
-        for m in backend_config.models:
-            if m.id == model_id:
-                current_context = m.context_length
-                if current_context > 0:
-                    usage_ratio = estimated_tokens / current_context
-                    if usage_ratio > 0.8:
-                        # 查找更大context的模型
-                        larger = find_larger_context_model(app, model_id, current_context)
-                        
-                        # 记录追踪信息
-                        context_upgrade_tracker[session_key] = {
-                            "count": 1,
-                            "original_model": model_id,
-                            "upgrade_to": larger,
-                            "timestamp": time.time()
-                        }
-                        
-                        if larger:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"context used {int(usage_ratio * 100)}%, will auto-route to {larger[0]} ({larger[2]} tokens) next time"
-                            )
-                        else:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"context used {int(usage_ratio * 100)}%"
-                            )
-                break
-
-    # 选择后端
-    selected_backend = None
-    tried_backends = []
-
-    for backend in available_backends:
-        if backend in tried_backends:
-            continue
-        if not await rate_limiter.can_request(backend.name, estimated_tokens):
-            tried_backends.append(backend)
-            continue
-        if rate_limiter.is_near_limit(backend.name, threshold=0.8):
-            tried_backends.append(backend)
-            continue
-        selected_backend = backend
-        break
-
-    # 回退规则
-    if not selected_backend and fallback_rules:
-        for rule in fallback_rules:
-            if rule.condition in ["rate_limit", "error"]:
-                for backend_name in rule.backends:
-                    if backend_name in app.backends:
-                        backend = app.backends[backend_name]
-                        if backend.status.healthy and await rate_limiter.can_request(backend.name, estimated_tokens):
-                            selected_backend = backend
-                            break
-            if selected_backend:
-                break
-
-    # 回退顺序
-    if not selected_backend and fallback_order:
-        for name in fallback_order:
-            if name in app.backends:
-                backend = app.backends[name]
-                if backend.status.healthy and await rate_limiter.can_request(backend.name, estimated_tokens):
-                    selected_backend = backend
-                    break
-
-    # 最后选择
-    if not selected_backend:
-        for backend in available_backends:
-            if backend not in tried_backends:
-                selected_backend = backend
-                break
-
-    if not selected_backend:
-        raise HTTPException(status_code=503, detail="All backends are rate limited or unavailable")
-
-    # 获取实际模型名称
-    backend_config = app.config.get_backend_by_name(selected_backend.name)
-    actual_model = model_id
-    if backend_config and model_id != "*":
-        for m in backend_config.models:
-            if m.id == model_id:
-                actual_model = m.name
-                break
-    elif backend_config and model_id == "*":
-        for m in backend_config.models:
-            if m.enabled:
-                actual_model = m.name
-                break
-
-    # 提取请求参数
+    estimated_tokens = estimate_tokens(messages)
     request_params = extract_request_params(body)
 
-    # 获取速率限制许可
-    await rate_limiter.acquire(selected_backend.name, estimated_tokens)
+    # 获取路由配置
+    route = app.config.routes[0] if app.config.routes else None
+    fallback_order = route.fallback_order if route else []
 
-    start_time = time.time()
+    # 构建回退列表
+    fallback_targets = []
+    
+    if raw_model.startswith("back-"):
+        # 使用指定路由的回退顺序
+        route_name = raw_model[5:]
+        for r in app.config.routes:
+            if r.name == route_name:
+                fallback_targets = r.fallback_order.copy()
+                break
+        if not fallback_targets:
+            # 没有配置回退顺序，使用所有可用的
+            for b in app.config.backends:
+                if b.enabled:
+                    for m in b.models:
+                        if m.enabled:
+                            fallback_targets.append(f"{b.name}/{m.id}")
+    else:
+        # 直接指定模型
+        found = False
+        for b in app.config.backends:
+            if not b.enabled:
+                continue
+            for m in b.models:
+                if m.id == raw_model and m.enabled:
+                    fallback_targets.insert(0, f"{b.name}/{m.id}")
+                    found = True
+                    break
+        # 添加路由的回退列表
+        for target in fallback_order:
+            if target not in fallback_targets:
+                fallback_targets.append(target)
+        # 如果没找到指定模型，添加所有可用的
+        if not found:
+            for b in app.config.backends:
+                if b.enabled:
+                    for m in b.models:
+                        if m.enabled:
+                            fallback_targets.append(f"{b.name}/{m.id}")
 
-    try:
-        if stream:
-            return StreamingResponse(
-                stream_chat_completion(selected_backend, actual_model, messages, request_params, start_time),
-                media_type="text/event-stream"
-            )
+    # 去重
+    seen = set()
+    unique_targets = []
+    for t in fallback_targets:
+        base = t.split("/")[0] if "/" not in t else t
+        if base not in seen:
+            seen.add(base)
+            unique_targets.append(t)
+    fallback_targets = unique_targets
+
+    # 尝试每个目标
+    last_error = None
+    tried = []
+
+    for target in fallback_targets:
+        provider_name, model_id = parse_fallback_target(target)
+        
+        if provider_name not in app.backends:
+            last_error = f"后端 {provider_name} 不存在"
+            continue
+        
+        backend = app.backends[provider_name]
+        
+        if not backend.status.healthy:
+            last_error = f"{provider_name} 不健康"
+            continue
+        
+        backend_config = app.config.get_backend_by_name(provider_name)
+        if not backend_config:
+            continue
+        
+        # 查找模型
+        model_config = None
+        actual_model = model_id
+        if model_id:
+            for m in backend_config.models:
+                if m.id == model_id:
+                    model_config = m
+                    actual_model = m.name
+                    break
         else:
-            result = await selected_backend.chat_completion(
-                model=actual_model,
-                messages=messages,
-                stream=False,
-                **request_params
-            )
-
+            for m in backend_config.models:
+                if m.enabled:
+                    model_config = m
+                    actual_model = m.name
+                    model_id = m.id
+                    break
+        
+        if not model_config:
+            last_error = f"{provider_name} 未找到模型 {model_id}"
+            continue
+        
+        # 检查上下文长度
+        if model_config.context_length > 0 and estimated_tokens > model_config.context_length:
+            last_error = f"{model_id} 上下文不足 ({estimated_tokens} > {model_config.context_length})"
+            tried.append(target)
+            continue
+        
+        # 检查速率限制
+        if not await rate_limiter.can_request(provider_name, estimated_tokens):
+            last_error = f"{provider_name} 速率限制"
+            tried.append(target)
+            continue
+        
+        # 尝试请求
+        await rate_limiter.acquire(provider_name, estimated_tokens)
+        start_time = time.time()
+        
+        try:
+            if stream:
+                need_fallback = len(tried) > 0
+                return StreamingResponse(
+                    stream_with_fallback(
+                        backend, actual_model, messages, request_params, start_time,
+                        provider_name, model_id, last_error if need_fallback else None
+                    ),
+                    media_type="text/event-stream"
+                )
+            else:
+                result = await backend.chat_completion(
+                    model=actual_model,
+                    messages=messages,
+                    stream=False,
+                    **request_params
+                )
+                
+                latency = time.time() - start_time
+                tokens = result.get("usage", {}).get("total_tokens", 0)
+                await stats.record(raw_model, provider_name, tokens, latency, True)
+                
+                # 如果有回退，注入信息
+                if tried and last_error:
+                    if "choices" in result and result["choices"]:
+                        choice = result["choices"][0]
+                        if "message" in choice and "content" in choice["message"]:
+                            original = choice["message"]["content"] or ""
+                            choice["message"]["content"] = inject_fallback_info(
+                                original, provider_name, model_id, last_error
+                            )
+                
+                return result
+                
+        except Exception as e:
             latency = time.time() - start_time
-            tokens = result.get("usage", {}).get("total_tokens", 0)
-            await stats.record(raw_model, selected_backend.name, tokens, latency, True)
+            await stats.record(raw_model, provider_name, 0, latency, False)
+            last_error = f"{provider_name}/{model_id} 请求失败: {str(e)}"
+            logger.error(f"Chat error for {target}: {e}")
+            tried.append(target)
+        finally:
+            rate_limiter.release(provider_name)
 
-            return result
-
-    except Exception as e:
-        latency = time.time() - start_time
-        await stats.record(raw_model, selected_backend.name, 0, latency, False)
-        logger.error(f"Chat completion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        rate_limiter.release(selected_backend.name)
+    raise HTTPException(status_code=503, detail=f"所有后端都不可用。最后错误: {last_error}")
 
 
-async def stream_chat_completion(backend, model: str, messages: List[Dict], params: Dict, start_time: float):
-    """流式响应"""
+async def stream_with_fallback(
+    backend, model: str, messages: List[Dict], params: Dict, start_time: float,
+    provider: str, model_id: str, fail_reason: Optional[str]
+):
+    """流式响应（带回退信息）"""
     try:
-        async for chunk in backend.chat_completion_stream(
-            model=model,
-            messages=messages,
-            **params
-        ):
+        # 先发送回退信息
+        if fail_reason:
+            fallback_msg = f"[openfish]回退到 {provider}/{model_id}，失败原因: {fail_reason}[openfish-end]\n\n"
+            chunk = {
+                "id": "chatcmpl-openfish",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": fallback_msg}, "finish_reason": None}]
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+        
+        async for chunk in backend.chat_completion_stream(model=model, messages=messages, **params):
             yield f"data: {json.dumps(chunk)}\n\n"
 
         yield "data: [DONE]\n\n"
@@ -331,7 +273,6 @@ async def stream_chat_completion(backend, model: str, messages: List[Dict], para
         latency = time.time() - start_time
         await stats.record(model, backend.name, 0, latency, False)
         logger.error(f"Stream error: {e}")
-        error_chunk = {"error": {"message": str(e), "type": "server_error"}}
-        yield f"data: {json.dumps(error_chunk)}\n\n"
+        yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'server_error'}})}\n\n"
     finally:
         rate_limiter.release(backend.name)

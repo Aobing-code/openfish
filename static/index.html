@@ -792,14 +792,40 @@
                 return;
             }
             const typeLabels = { ollama: 'Ollama', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini' };
-            list.innerHTML = currentFallbackOrder.map((name, index) => {
-                const backend = backends.find(b => b.name === name);
+            
+            list.innerHTML = currentFallbackOrder.map((target, index) => {
+                // 解析 provider/model 格式
+                let provider, model, display, contextInfo = '';
+                if (target.includes('/')) {
+                    [provider, model] = target.split('/');
+                    // 查找模型信息
+                    for (const b of currentConfig.backends || []) {
+                        if (b.name === provider) {
+                            for (const m of b.models || []) {
+                                if (m.id === model) {
+                                    contextInfo = m.context_length ? `${m.context_length.toLocaleString()} tokens` : '未知';
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    display = `<strong>${provider}</strong> / ${model}`;
+                } else {
+                    provider = target;
+                    model = null;
+                    display = `<strong>${target}</strong>`;
+                }
+                
+                const backend = backends.find(b => b.name === provider);
+                const typeLabel = backend ? typeLabels[backend.type] || backend.type : '未知';
+                
                 return `
-                    <li class="sortable-item" draggable="true" data-name="${name}" data-index="${index}">
+                    <li class="sortable-item" draggable="true" data-target="${target}" data-index="${index}">
                         <span class="drag-handle">⋮⋮</span>
-                        <span class="item-name">${name}</span>
-                        <span class="item-type">${backend ? typeLabels[backend.type] || backend.type : '未知'}</span>
-                        <button class="remove-btn" onclick="removeFromFallback('${name}')">移除</button>
+                        <span class="item-name">${display}</span>
+                        <span class="item-type">${typeLabel}${contextInfo ? ' | ' + contextInfo : ''}</span>
+                        <button class="remove-btn" onclick="removeFromFallback('${target}')">移除</button>
                     </li>
                 `;
             }).join('');
@@ -808,15 +834,35 @@
 
         function renderAvailableBackends(backends) {
             const container = document.getElementById('available-backends-list');
-            const available = backends.filter(b => !currentFallbackOrder.includes(b.name));
+            const typeLabels = { ollama: 'Ollama', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini' };
+            
+            // 构建所有可用的 provider/model 组合
+            const available = [];
+            for (const b of backends) {
+                if (!b.enabled) continue;
+                for (const m of b.models || []) {
+                    const target = `${b.name}/${m.id}`;
+                    if (!currentFallbackOrder.includes(target)) {
+                        available.push({
+                            target,
+                            provider: b.name,
+                            model: m.id,
+                            type: b.type,
+                            context_length: m.context_length
+                        });
+                    }
+                }
+            }
+            
             if (available.length === 0) {
-                container.innerHTML = '<span class="empty-state">所有后端已添加</span>';
+                container.innerHTML = '<span class="empty-state">所有模型已添加</span>';
                 return;
             }
-            const typeLabels = { ollama: 'Ollama', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini' };
-            container.innerHTML = available.map(b => `
-                <span class="available-backend" onclick="addToFallback('${b.name}')">+ ${b.name} (${typeLabels[b.type] || b.type})</span>
-            `).join('');
+            
+            container.innerHTML = available.map(a => {
+                const contextInfo = a.context_length ? `${a.context_length.toLocaleString()} tokens` : '';
+                return `<span class="available-backend" onclick="addToFallback('${a.target}')" title="${contextInfo}">+ ${a.provider}/${a.model} (${typeLabels[a.type] || a.type})</span>`;
+            }).join('');
         }
 
         function addToFallback(name) {
