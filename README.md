@@ -4,6 +4,8 @@
 
 **轻量级端侧AI总线 · 统一AI模型路由平台**
 
+**Lightweight Edge AI Bus · Unified AI Model Routing Platform**
+
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://hub.docker.com)
 [![Python](https://img.shields.io/badge/Python-3.11+-green)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
@@ -12,36 +14,32 @@
 
 ---
 
-## 亮点特性
+## 亮点特性 | Highlights
 
-| 特性 | 说明 |
-|------|------|
-| **全平台API统一** | 一个接口兼容 OpenAI、Claude、Gemini、Ollama，无需修改代码 |
-| **智能故障转移** | 速率限制预判、自动降级、多级回退，服务永不断线 |
-| **多Key轮询** | 每个提供商支持多个 API Key，自动负载均衡，突破单Key限速 |
-| **模型独立限速** | 每个模型可设置 RPM/TPM/并发数，精细控制成本 |
+| Feature 特性 | Description 说明 |
+|--------------|------------------|
+| **全平台API统一** | 一个接口兼容 OpenAI、Claude、Gemini、Ollama |
+| **Unified API** | One interface for OpenAI, Claude, Gemini, Ollama |
+| **智能故障转移** | 速率限制预判、自动降级、多级回退 |
+| **Smart Failover** | Rate limit prediction, auto degradation, multi-level fallback |
+| **多Key轮询** | 每个提供商支持多个 API Key，自动负载均衡 |
+| **Multi-Key Rotation** | Multiple API keys per provider with load balancing |
+| **模型独立限速** | 每个模型可设置 RPM/TPM/并发数 |
+| **Per-Model Rate Limit** | RPM/TPM/concurrent limits for each model |
 | **多模态支持** | 图片、文本混合输入，Vision 全后端通用 |
-| **工具调用** | Function Calling 跨平台统一，OpenAI格式一调到底 |
+| **Multimodal** | Image and text input, Vision across all backends |
+| **工具调用** | Function Calling 跨平台统一 |
+| **Tool Calling** | Unified Function Calling in OpenAI format |
 | **零依赖部署** | 纯内存运行，无数据库，Docker 一键启动 |
-| **实时监控** | Web 面板查看 QPS、延迟、Token 统计，一目了然 |
+| **Zero Dependencies** | In-memory, no database, Docker one-click deploy |
+| **实时监控** | Web 面板查看 QPS、延迟、Token 统计 |
+| **Real-time Monitor** | Web dashboard for QPS, latency, token stats |
 
 ---
 
-## 为什么选择 OpenFish？
+## 快速开始 | Quick Start
 
-```diff
-+ 一套代码，调用所有AI模型
-+ 一个Key用完？自动切换下一个
-+ 请求太多？自动转移到其他后端
-+ 想用哪个模型？model字段直接指定
-+ 想按策略路由？back-xxx一键切换
-```
-
----
-
-## 快速开始
-
-### Docker 部署（推荐）
+### Docker 部署 | Docker Deploy
 
 ```bash
 docker run -d -p 8080:8080 \
@@ -49,7 +47,7 @@ docker run -d -p 8080:8080 \
   openfish
 ```
 
-### 源码运行
+### 源码运行 | From Source
 
 ```bash
 pip install -r requirements.txt
@@ -58,45 +56,49 @@ python -m app.main
 
 访问 `http://localhost:8080` 查看监控面板。
 
+Visit `http://localhost:8080` for the dashboard.
+
 ---
 
-## 核心功能
+## 核心功能 | Core Features
 
-### 1. 统一API入口
+### 1. 统一API入口 | Unified API
 
-所有后端使用相同的 OpenAI 格式：
+所有后端使用相同的 OpenAI 格式：  
+All backends use the same OpenAI format:
 
 ```bash
-# 调用 OpenAI
+# 调用 OpenAI | Call OpenAI
 curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "gpt-4", "messages": [...]}'
 
-# 调用 Claude（同一接口）
+# 调用 Claude | Call Claude
 curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "claude-sonnet", "messages": [...]}'
 
-# 调用 Gemini（同一接口）
+# 调用 Gemini | Call Gemini
 curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "gemini-pro", "messages": [...]}'
 
-# 调用本地 Ollama（同一接口）
+# 调用本地 Ollama | Call local Ollama
 curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "llama3", "messages": [...]}'
 ```
 
-### 2. 智能路由与故障转移
+### 2. 智能路由 | Smart Routing
 
 ```bash
 # 直接指定模型（失败后自动回退）
+# Direct model (auto fallback on failure)
 curl -d '{"model": "gpt-4", ...}'
 
-# 使用指定路由策略
+# 使用指定路由策略 | Use specific route
 curl -d '{"model": "back-default", ...}'
 curl -d '{"model": "back-cheap", ...}'
 curl -d '{"model": "back-fast", ...}'
 ```
 
-### 3. 工具调用（Function Calling）
+### 3. 工具调用 | Tool Calling
 
 ```json
 {
@@ -106,7 +108,7 @@ curl -d '{"model": "back-fast", ...}'
     "type": "function",
     "function": {
       "name": "get_weather",
-      "description": "获取天气",
+      "description": "获取天气 | Get weather",
       "parameters": {
         "type": "object",
         "properties": {
@@ -119,7 +121,7 @@ curl -d '{"model": "back-fast", ...}'
 }
 ```
 
-### 4. 多模态 Vision
+### 4. 多模态 Vision | Multimodal
 
 ```json
 {
@@ -127,47 +129,18 @@ curl -d '{"model": "back-fast", ...}'
   "messages": [{
     "role": "user",
     "content": [
-      {"type": "text", "text": "这是什么？"},
+      {"type": "text", "text": "这是什么？| What's this?"},
       {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
     ]
   }]
 }
 ```
 
-### 5. 多Key轮询
-
-```json
-{
-  "name": "openai",
-  "type": "openai",
-  "api_keys": ["sk-key1", "sk-key2", "sk-key3"],
-  "models": [...]
-}
-```
-
-多个 Key 自动轮询，单个 Key 限速自动切换下一个。
-
-### 6. 模型独立限速
-
-```json
-{
-  "models": [{
-    "id": "gpt-4",
-    "name": "gpt-4-turbo",
-    "rate_limit": {
-      "rpm": 100,      // 每分钟最多100次请求
-      "tpm": 200000,   // 每分钟最多20万Token
-      "concurrent": 5  // 最多5个并发
-    }
-  }]
-}
-```
-
 ---
 
-## 配置说明
+## 配置说明 | Configuration
 
-### 完整配置示例
+### 完整配置示例 | Full Config Example
 
 ```json
 {
@@ -214,8 +187,7 @@ curl -d '{"model": "back-fast", ...}'
       "url": "https://api.anthropic.com",
       "api_keys": ["sk-ant-key1", "sk-ant-key2"],
       "models": [
-        {"id": "claude-sonnet", "name": "claude-3-5-sonnet-20241022"},
-        {"id": "claude-haiku", "name": "claude-3-5-haiku-20241022"}
+        {"id": "claude-sonnet", "name": "claude-3-5-sonnet-20241022", "context_length": 200000}
       ]
     },
     {
@@ -224,8 +196,7 @@ curl -d '{"model": "back-fast", ...}'
       "url": "https://generativelanguage.googleapis.com",
       "api_keys": ["gemini-key1"],
       "models": [
-        {"id": "gemini-pro", "name": "gemini-1.5-pro"},
-        {"id": "gemini-flash", "name": "gemini-1.5-flash"}
+        {"id": "gemini-pro", "name": "gemini-1.5-pro", "context_length": 1000000}
       ]
     }
   ],
@@ -252,105 +223,105 @@ curl -d '{"model": "back-fast", ...}'
 
 ---
 
-## 路由策略
+## 路由策略 | Routing Strategy
 
-| 策略 | 说明 |
-|------|------|
-| `latency` | 选择延迟最低的后端（默认） |
-| `round_robin` | 轮询分发 |
-| `random` | 随机选择 |
-| `weighted` | 按权重分发 |
-| `priority` | 按优先级选择 |
-| `custom` | 自定义回退顺序 |
-
----
-
-## 故障转移规则
-
-| 条件 | 说明 |
-|------|------|
-| `rate_limit` | 触发速率限制时自动转移 |
-| `error` | 错误次数超过阈值时转移 |
-| `latency` | 延迟超过阈值时转移 |
-| `timeout` | 请求超时时转移 |
+| 策略 | 说明 | Description |
+|------|------|-------------|
+| `latency` | 选择延迟最低的后端（默认） | Select lowest latency (default) |
+| `round_robin` | 轮询分发 | Round-robin distribution |
+| `random` | 随机选择 | Random selection |
+| `weighted` | 按权重分发 | Weighted distribution |
+| `priority` | 按优先级选择 | Priority-based selection |
+| `custom` | 自定义回退顺序 | Custom fallback order |
 
 ---
 
-## 支持的后端
+## 故障转移 | Failover
 
-| 后端 | 类型 | 工具调用 | 多模态 |
-|------|------|---------|--------|
-| OpenAI / Azure / 兼容接口 | `openai` | ✅ | ✅ |
+| 条件 | 说明 | Description |
+|------|------|-------------|
+| `rate_limit` | 触发速率限制时自动转移 | Auto transfer on rate limit |
+| `error` | 错误次数超过阈值时转移 | Transfer on error threshold |
+| `latency` | 延迟超过阈值时转移 | Transfer on latency threshold |
+| `timeout` | 请求超时时转移 | Transfer on timeout |
+
+---
+
+## 支持的后端 | Supported Backends
+
+| Backend 后端 | Type 类型 | Tool Calling 工具调用 | Multimodal 多模态 |
+|--------------|-----------|----------------------|-------------------|
+| OpenAI / Azure / Compatible | `openai` | ✅ | ✅ |
 | Anthropic Claude | `anthropic` | ✅ | ✅ |
 | Google Gemini | `google` | ✅ | ✅ |
 | Ollama | `ollama` | ✅ | ✅ |
 
 ---
 
-## Docker 部署
+## Docker 部署 | Docker Deploy
 
 ```bash
-# 构建镜像
+# 构建镜像 | Build image
 docker build -t openfish .
 
-# 运行容器
+# 运行容器 | Run container
 docker run -d \
   --name openfish \
   -p 8080:8080 \
   -v $(pwd)/config.json:/app/config.json \
   openfish
 
-# 或使用 docker-compose
+# 或使用 docker-compose | Or use docker-compose
 docker-compose up -d
 ```
 
 ---
 
-## Linux 服务化部署
+## Linux 服务化 | Linux Service
 
 ```bash
-# 复制服务文件
+# 复制服务文件 | Copy service file
 sudo cp openfish.service /etc/systemd/system/
 
-# 启用并启动
+# 启用并启动 | Enable and start
 sudo systemctl enable openfish
 sudo systemctl start openfish
 
-# 查看日志
+# 查看日志 | View logs
 sudo journalctl -u openfish -f
 ```
 
 ---
 
-## 项目结构
+## 项目结构 | Project Structure
 
 ```
 openfish/
 ├── app/
-│   ├── main.py           # 主入口
-│   ├── config.py         # 配置管理（热更新）
+│   ├── main.py           # 主入口 | Main entry
+│   ├── config.py         # 配置管理 | Config management
 │   ├── api/
-│   │   ├── chat.py       # Chat Completions（工具调用/多模态）
+│   │   ├── chat.py       # Chat Completions
 │   │   ├── embeddings.py # Embeddings
 │   │   ├── models.py     # Models
-│   │   ├── monitor.py    # 监控API
-│   │   └── config.py     # 配置管理API
+│   │   ├── monitor.py    # 监控API | Monitor API
+│   │   └── config.py     # 配置API | Config API
 │   ├── backends/
-│   │   ├── base.py       # 后端基类
+│   │   ├── base.py       # 后端基类 | Backend base
 │   │   ├── openai.py     # OpenAI 兼容
 │   │   ├── anthropic.py  # Anthropic Claude
 │   │   ├── google.py     # Google Gemini
 │   │   └── ollama.py     # Ollama
 │   ├── core/
-│   │   ├── balancer.py   # 负载均衡
-│   │   ├── ratelimit.py  # 速率限制
+│   │   ├── balancer.py   # 负载均衡 | Load balancer
+│   │   ├── ratelimit.py  # 速率限制 | Rate limiter
 │   │   ├── auth.py       # API Key 认证
-│   │   └── stats.py      # 统计追踪
+│   │   └── stats.py      # 统计追踪 | Statistics
 │   └── web/
-│       └── dashboard.py  # 监控面板
+│       └── dashboard.py  # 监控面板 | Dashboard
 ├── static/
-│   └── index.html        # 前端界面
-├── config.example.json   # 示例配置
+│   └── index.html        # 前端界面 | Frontend
+├── config.example.json   # 示例配置 | Example config
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
@@ -361,4 +332,3 @@ openfish/
 ## License
 
 MIT
-
