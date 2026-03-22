@@ -212,6 +212,9 @@ async def chat_completions(request: Request):
         start_time = time.time()
         
         try:
+            # 设置单个后端的超时时间（使用后端配置的timeout）
+            backend_timeout = backend_config.timeout if backend_config else 60
+            
             if stream:
                 need_fallback = len(tried) > 0
                 return StreamingResponse(
@@ -222,12 +225,20 @@ async def chat_completions(request: Request):
                     media_type="text/event-stream"
                 )
             else:
-                result = await backend.chat_completion(
-                    model=actual_model,
-                    messages=messages,
-                    stream=False,
-                    **request_params
-                )
+                # 使用asyncio.wait_for添加超时控制
+                import asyncio
+                try:
+                    result = await asyncio.wait_for(
+                        backend.chat_completion(
+                            model=actual_model,
+                            messages=messages,
+                            stream=False,
+                            **request_params
+                        ),
+                        timeout=backend_timeout
+                    )
+                except asyncio.TimeoutError:
+                    raise Exception(f"请求超时 ({backend_timeout}s)")
                 
                 latency = time.time() - start_time
                 tokens = result.get("usage", {}).get("total_tokens", 0)
@@ -250,6 +261,8 @@ async def chat_completions(request: Request):
             await stats.record(raw_model, provider_name, 0, latency, False)
             last_error = f"{provider_name}/{model_id} 请求失败: {str(e)}"
             logger.error(f"Chat error for {target}: {e}")
+            # 标记为不健康
+            backend.update_status(False, latency)
             tried.append(target)
         finally:
             rate_limiter.release(provider_name)
