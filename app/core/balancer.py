@@ -26,11 +26,9 @@ class LoadBalancer:
         if not backends:
             return None
 
-        # 自定义回退顺序
         if strategy == "custom" and fallback_order and backends_map:
             return self._custom_fallback(backends, fallback_order, backends_map)
 
-        # 优先级策略
         if strategy == "priority":
             return self._priority(backends)
 
@@ -40,39 +38,8 @@ class LoadBalancer:
             return self._random(backends)
         elif strategy == "weighted":
             return self._weighted(backends)
-        else:  # latency (default)
+        else:
             return self._lowest_latency(backends)
-
-    def select_with_fallback(
-        self,
-        primary_backends: List[BaseBackend],
-        strategy: str,
-        fallback_rules: List[Dict],
-        backends_map: Dict[str, BaseBackend]
-    ) -> List[BaseBackend]:
-        """选择后端并生成回退链"""
-        result = []
-
-        # 首先选择主后端
-        primary = self.select(primary_backends, strategy)
-        if primary:
-            result.append(primary)
-
-        # 根据回退规则添加备用后端
-        for rule in fallback_rules:
-            rule_backends = []
-            for name in rule.get("backends", []):
-                if name in backends_map and backends_map[name] not in result:
-                    backend = backends_map[name]
-                    if backend.status.healthy:
-                        rule_backends.append(backend)
-
-            # 添加到回退链
-            for b in rule_backends:
-                if b not in result:
-                    result.append(b)
-
-        return result
 
     def _custom_fallback(
         self,
@@ -83,24 +50,20 @@ class LoadBalancer:
         """自定义回退顺序"""
         available_names = {b.name for b in available_backends}
 
-        # 按照fallback_order顺序选择第一个可用的后端
         for name in fallback_order:
             if name in available_names and name in backends_map:
                 backend = backends_map[name]
                 if backend.status.healthy:
                     return backend
 
-        # 如果自定义顺序中没有可用的，返回第一个健康的
         for backend in available_backends:
             if backend.status.healthy:
                 return backend
 
-        # 如果没有健康的，返回第一个
         return available_backends[0] if available_backends else None
 
     def _priority(self, backends: List[BaseBackend]) -> BaseBackend:
         """优先级策略"""
-        # 按优先级排序，选择优先级最高（数字最小）的健康后端
         sorted_backends = sorted(backends, key=lambda b: getattr(b, 'priority', 1))
         for backend in sorted_backends:
             if backend.status.healthy:
@@ -132,6 +95,8 @@ class HealthChecker:
     def __init__(self):
         self._tasks: dict = {}
         self._running = False
+        # 速率限制临时禁用记录 {(backend_name, model_id): expire_time}
+        self._rate_limited: Dict[str, float] = {}
 
     async def start(self, backends: List[BaseBackend], interval: int = 30) -> None:
         """启动健康检查"""
@@ -149,17 +114,42 @@ class HealthChecker:
         self._tasks.clear()
         logger.info("Health checker stopped")
 
+    def mark_rate_limited(self, backend_name: str, model_id: str = "", cooldown: int = 60) -> None:
+        """标记后端/模型被速率限制，暂时禁用"""
+        key = f"{backend_name}/{model_id}" if model_id else backend_name
+        self._rate_limited[key] = time.time() + cooldown
+        logger.info(f"Marked {key} as rate limited for {cooldown}s")
+
+    def is_rate_limited(self, backend_name: str, model_id: str = "") -> bool:
+        """检查是否被速率限制"""
+        key = f"{backend_name}/{model_id}" if model_id else backend_name
+        expire_time = self._rate_limited.get(key, 0)
+        
+        # 检查后端级别限制
+        backend_expire = self._rate_limited.get(backend_name, 0)
+        
+        if time.time() > expire_time and time.time() > backend_expire:
+            # 过期，清除
+            self._rate_limited.pop(key, None)
+            return False
+        
+        return time.time() < expire_time or time.time() < backend_expire
+
     async def _check_loop(self, backend: BaseBackend, interval: int) -> None:
         """检查循环"""
         while self._running:
             try:
-                await backend.health_check()
-                if backend.status.healthy:
+                healthy = await backend.health_check()
+                if healthy:
                     logger.debug(f"Backend {backend.name} is healthy")
+                    # 健康检查通过，清除速率限制标记
+                    self._rate_limited.pop(backend.name, None)
                 else:
                     logger.warning(f"Backend {backend.name} is unhealthy")
             except Exception as e:
                 logger.error(f"Health check error for {backend.name}: {e}")
+                # 健康检查异常，标记为不健康
+                backend.update_status(False, 0)
 
             await asyncio.sleep(interval)
 

@@ -5,16 +5,28 @@ from typing import Dict, List, Any, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from app.core import stats, rate_limiter
+from app.core.balancer import HealthChecker
 
 import logging
 logger = logging.getLogger("openfish.api.chat")
 
 router = APIRouter()
 
+# 全局健康检查器引用
+_health_checker: Optional[HealthChecker] = None
+
 
 def get_app():
     from app import main as app_main
     return app_main
+
+
+def get_health_checker() -> HealthChecker:
+    global _health_checker
+    if _health_checker is None:
+        from app.main import health_checker
+        _health_checker = health_checker
+    return _health_checker
 
 
 def estimate_tokens(messages: List[Dict]) -> int:
@@ -34,11 +46,7 @@ def estimate_tokens(messages: List[Dict]) -> int:
 
 
 def parse_fallback_target(target: str) -> Tuple[str, Optional[str]]:
-    """
-    解析回退目标
-    格式: "provider/model" 或 "provider" 或 "model"
-    返回: (provider_name, model_id)
-    """
+    """解析回退目标: provider/model 或 provider"""
     if "/" in target:
         parts = target.split("/", 1)
         return parts[0], parts[1]
@@ -67,6 +75,7 @@ def inject_fallback_info(content: str, provider: str, model: str, reason: str) -
 async def chat_completions(request: Request):
     """OpenAI兼容的chat/completions端点"""
     app = get_app()
+    hc = get_health_checker()
 
     try:
         body = await request.json()
@@ -93,21 +102,18 @@ async def chat_completions(request: Request):
     fallback_targets = []
     
     if raw_model.startswith("back-"):
-        # 使用指定路由的回退顺序
         route_name = raw_model[5:]
         for r in app.config.routes:
             if r.name == route_name:
                 fallback_targets = r.fallback_order.copy()
                 break
         if not fallback_targets:
-            # 没有配置回退顺序，使用所有可用的
             for b in app.config.backends:
                 if b.enabled:
                     for m in b.models:
                         if m.enabled:
                             fallback_targets.append(f"{b.name}/{m.id}")
     else:
-        # 直接指定模型
         found = False
         for b in app.config.backends:
             if not b.enabled:
@@ -117,11 +123,9 @@ async def chat_completions(request: Request):
                     fallback_targets.insert(0, f"{b.name}/{m.id}")
                     found = True
                     break
-        # 添加路由的回退列表
         for target in fallback_order:
             if target not in fallback_targets:
                 fallback_targets.append(target)
-        # 如果没找到指定模型，添加所有可用的
         if not found:
             for b in app.config.backends:
                 if b.enabled:
@@ -146,14 +150,22 @@ async def chat_completions(request: Request):
     for target in fallback_targets:
         provider_name, model_id = parse_fallback_target(target)
         
+        # 检查后端是否存在
         if provider_name not in app.backends:
             last_error = f"后端 {provider_name} 不存在"
             continue
         
         backend = app.backends[provider_name]
         
+        # 检查健康状态
         if not backend.status.healthy:
             last_error = f"{provider_name} 不健康"
+            continue
+        
+        # 检查是否被速率限制临时禁用
+        if hc.is_rate_limited(provider_name, model_id or ""):
+            last_error = f"{provider_name}/{model_id or '*'} 速率限制冷却中"
+            tried.append(target)
             continue
         
         backend_config = app.config.get_backend_by_name(provider_name)
@@ -190,6 +202,8 @@ async def chat_completions(request: Request):
         # 检查速率限制
         if not await rate_limiter.can_request(provider_name, estimated_tokens):
             last_error = f"{provider_name} 速率限制"
+            # 标记为速率限制，60秒后恢复
+            hc.mark_rate_limited(provider_name, "", 60)
             tried.append(target)
             continue
         
@@ -203,7 +217,7 @@ async def chat_completions(request: Request):
                 return StreamingResponse(
                     stream_with_fallback(
                         backend, actual_model, messages, request_params, start_time,
-                        provider_name, model_id, last_error if need_fallback else None
+                        provider_name, model_id or "", last_error if need_fallback else None
                     ),
                     media_type="text/event-stream"
                 )
@@ -226,7 +240,7 @@ async def chat_completions(request: Request):
                         if "message" in choice and "content" in choice["message"]:
                             original = choice["message"]["content"] or ""
                             choice["message"]["content"] = inject_fallback_info(
-                                original, provider_name, model_id, last_error
+                                original, provider_name, model_id or "", last_error
                             )
                 
                 return result
@@ -249,7 +263,6 @@ async def stream_with_fallback(
 ):
     """流式响应（带回退信息）"""
     try:
-        # 先发送回退信息
         if fail_reason:
             fallback_msg = f"[openfish]回退到 {provider}/{model_id}，失败原因: {fail_reason}[openfish-end]\n\n"
             chunk = {
