@@ -44,7 +44,7 @@
 ```bash
 docker run -d -p 8080:8080 \
   -v ./config.json:/app/config.json \
-  openfish
+  fishrouter
 ```
 
 ### 源码运行 | From Source
@@ -262,14 +262,14 @@ curl -d '{"model": "back-fast", ...}'
 
 ```bash
 # 构建镜像 | Build image
-docker build -t openfish .
+docker build -t fishrouter .
 
 # 运行容器 | Run container
 docker run -d \
   --name openfish \
   -p 8080:8080 \
   -v $(pwd)/config.json:/app/config.json \
-  openfish
+  fishrouter
 
 # 或使用 docker-compose | Or use docker-compose
 docker-compose up -d
@@ -281,14 +281,14 @@ docker-compose up -d
 
 ```bash
 # 复制服务文件 | Copy service file
-sudo cp openfish.service /etc/systemd/system/
+sudo cp fishrouter.service /etc/systemd/system/
 
 # 启用并启动 | Enable and start
-sudo systemctl enable openfish
-sudo systemctl start openfish
+sudo systemctl enable fishrouter
+sudo systemctl start fishrouter
 
 # 查看日志 | View logs
-sudo journalctl -u openfish -f
+sudo journalctl -u fishrouter -f
 ```
 
 ---
