@@ -237,15 +237,32 @@ class AnthropicBackend(BaseBackend):
         """向量嵌入 - Anthropic不支持"""
         raise NotImplementedError("Anthropic does not support embeddings")
 
-    async def list_models(self) -> List[str]:
-        """列出可用模型"""
-        return [
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307"
-        ]
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """列出可用模型（调用API获取）"""
+        client = await self._get_client()
+        try:
+            response = await client.get(f"{self.url}/v1/models")
+            response.raise_for_status()
+            data = response.json()
+            
+            models = []
+            for m in data.get("data", []):
+                model_info = {
+                    "id": m.get("id", ""),
+                    "name": m.get("display_name") or m.get("id", ""),
+                    "context_length": m.get("max_input_tokens") or 200000,
+                    "max_tokens": m.get("max_tokens") or 4096,
+                }
+                models.append(model_info)
+            return models
+        except Exception as e:
+            logger.error(f"Anthropic list models error: {e}")
+            # 返回默认模型列表
+            return [
+                {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet", "context_length": 200000},
+                {"id": "claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku", "context_length": 200000},
+                {"id": "claude-3-opus-20240229", "name": "Claude 3 Opus", "context_length": 200000},
+            ]
 
     async def health_check(self) -> bool:
         """健康检查"""

@@ -217,14 +217,25 @@ class OllamaBackend(BaseBackend):
             logger.error(f"Ollama embedding error: {e}")
             raise
 
-    async def list_models(self) -> List[str]:
-        """列出可用模型"""
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """列出可用模型（包含详细信息）"""
         client = await self._get_client()
         try:
             response = await client.get(f"{self.url}/api/tags")
             response.raise_for_status()
             data = response.json()
-            return [m["name"] for m in data.get("models", [])]
+            
+            models = []
+            for m in data.get("models", []):
+                model_info = {
+                    "id": m.get("name", ""),
+                    "name": m.get("name", ""),
+                    "context_length": m.get("details", {}).get("parameter_size") or 4096,
+                    "size": m.get("size", 0),
+                    "modified_at": m.get("modified_at", ""),
+                }
+                models.append(model_info)
+            return models
         except Exception as e:
             logger.error(f"Ollama list models error: {e}")
             return []

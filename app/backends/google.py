@@ -281,14 +281,40 @@ class GoogleBackend(BaseBackend):
             logger.error(f"Google embedding error: {e}")
             raise
 
-    async def list_models(self) -> List[str]:
-        """列出可用模型"""
-        return [
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
-            "gemini-1.0-pro",
-            "text-embedding-004"
-        ]
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """列出可用模型（调用API获取）"""
+        client = await self._get_client()
+        try:
+            url = f"{self.url}/v1beta/models"
+            if self.api_key:
+                url += f"?key={self.api_key}"
+            
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            
+            models = []
+            for m in data.get("models", []):
+                # 只返回生成模型
+                supported_methods = m.get("supportedGenerationMethods", [])
+                if "generateContent" in supported_methods:
+                    model_info = {
+                        "id": m.get("name", "").replace("models/", ""),
+                        "name": m.get("displayName", ""),
+                        "context_length": m.get("inputTokenLimit") or 32768,
+                        "max_tokens": m.get("outputTokenLimit") or 8192,
+                        "description": m.get("description", ""),
+                    }
+                    models.append(model_info)
+            return models
+        except Exception as e:
+            logger.error(f"Google list models error: {e}")
+            # 返回默认模型列表
+            return [
+                {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro", "context_length": 1000000},
+                {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash", "context_length": 1000000},
+                {"id": "gemini-1.0-pro", "name": "Gemini 1.0 Pro", "context_length": 32768},
+            ]
 
     async def health_check(self) -> bool:
         """健康检查"""

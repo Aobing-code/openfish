@@ -161,14 +161,24 @@ class OpenAIBackend(BaseBackend):
             logger.error(f"OpenAI embedding error: {e}")
             raise
 
-    async def list_models(self) -> List[str]:
-        """列出可用模型"""
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """列出可用模型（包含详细信息）"""
         client = await self._get_client()
         try:
             response = await client.get(f"{self.url}/models")
             response.raise_for_status()
             data = response.json()
-            return [m["id"] for m in data.get("data", [])]
+            
+            models = []
+            for m in data.get("data", []):
+                model_info = {
+                    "id": m.get("id", ""),
+                    "name": m.get("id", ""),
+                    "context_length": m.get("context_length") or 4096,
+                    "owned_by": m.get("owned_by", ""),
+                }
+                models.append(model_info)
+            return models
         except Exception as e:
             logger.error(f"OpenAI list models error: {e}")
             return []

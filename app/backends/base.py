@@ -77,8 +77,8 @@ class BaseBackend(ABC):
         pass
 
     @abstractmethod
-    async def list_models(self) -> List[str]:
-        """列出可用模型"""
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """列出可用模型（包含详细信息）"""
         pass
 
     @abstractmethod
