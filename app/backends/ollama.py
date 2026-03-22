@@ -95,6 +95,12 @@ class OllamaBackend(BaseBackend):
             if kwargs.get("max_tokens") is not None:
                 payload["options"]["num_predict"] = kwargs["max_tokens"]
 
+            # Ollama支持tools（需要模型支持）
+            if kwargs.get("tools"):
+                payload["tools"] = kwargs["tools"]
+            if kwargs.get("tool_choice"):
+                payload["tool_choice"] = kwargs["tool_choice"]
+
             response = await client.post(
                 f"{self.url}/api/chat",
                 json=payload
@@ -137,6 +143,12 @@ class OllamaBackend(BaseBackend):
                 payload["options"]["temperature"] = kwargs["temperature"]
             if kwargs.get("max_tokens") is not None:
                 payload["options"]["num_predict"] = kwargs["max_tokens"]
+
+            # Ollama支持tools
+            if kwargs.get("tools"):
+                payload["tools"] = kwargs["tools"]
+            if kwargs.get("tool_choice"):
+                payload["tool_choice"] = kwargs["tool_choice"]
 
             async with client.stream(
                 "POST",

@@ -1,7 +1,7 @@
 """Chat Completions API端点"""
 import time
 import json
-from typing import Dict, List
+from typing import Dict, List, Any, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from app.core import stats, rate_limiter
@@ -17,6 +17,63 @@ def get_app():
     return app_main
 
 
+def parse_model_field(model: str, config) -> Tuple[str, Optional[object]]:
+    """
+    解析model字段
+    返回: (实际model_id, 路由配置)
+    
+    格式:
+    - "gpt-4" -> 直接使用模型，失败后用默认路由回退
+    - "back-default" -> 使用名为default的路由配置
+    - "back-openai" -> 使用名为openai的路由配置
+    """
+    if model.startswith("back-"):
+        # 使用指定路由
+        route_name = model[5:]  # 去掉 "back-" 前缀
+        for route in config.routes:
+            if route.name == route_name:
+                return "*", route  # 返回通配符，让路由决定使用哪些后端
+        # 路由不存在，返回默认
+        return "*", config.routes[0] if config.routes else None
+    else:
+        # 直接使用模型名
+        return model, config.routes[0] if config.routes else None
+
+
+def find_backends_for_model(model_id: str, config, backends: dict) -> List:
+    """查找支持指定模型的后端"""
+    if model_id == "*":
+        # 返回所有启用的后端
+        return [b for b in backends.values() if b.status.healthy]
+    
+    available = []
+    for backend in backends.values():
+        if not backend.status.healthy:
+            continue
+        backend_config = config.get_backend_by_name(backend.name)
+        if backend_config:
+            for m in backend_config.models:
+                if m.id == "*" or m.id == model_id:
+                    if m.enabled:
+                        available.append(backend)
+                        break
+    return available
+
+
+def extract_request_params(body: Dict) -> Dict[str, Any]:
+    """提取请求参数（支持tools等所有OpenAI参数）"""
+    params = {}
+    
+    for key in ["temperature", "max_tokens", "top_p", "frequency_penalty", 
+                "presence_penalty", "stop", "n", "seed", "response_format",
+                "tools", "tool_choice", "functions", "function_call",
+                "logprobs", "top_logprobs"]:
+        if key in body and body[key] is not None:
+            params[key] = body[key]
+    
+    return params
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """OpenAI兼容的chat/completions端点"""
@@ -27,68 +84,62 @@ async def chat_completions(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    model_id = body.get("model", "")
+    raw_model = body.get("model", "")
     messages = body.get("messages", [])
     stream = body.get("stream", False)
 
-    if not model_id:
+    if not raw_model:
         raise HTTPException(status_code=400, detail="Model is required")
     if not messages:
         raise HTTPException(status_code=400, detail="Messages are required")
 
-    # 获取支持该模型ID的后端
-    available_backends = []
-    for backend in app.backends.values():
-        if not backend.status.healthy:
-            continue
-        # 检查后端是否支持该模型ID
-        for m in app.config.get_backend_by_name(backend.name).models if app.config.get_backend_by_name(backend.name) else []:
-            if m.id == "*" or m.id == model_id:
-                if m.enabled:
-                    available_backends.append(backend)
-                    break
+    # 解析model字段
+    model_id, route = parse_model_field(raw_model, app.config)
+
+    # 查找可用后端
+    if model_id == "*" and route:
+        # 使用路由配置的模型列表
+        available_backends = []
+        for backend_name in route.fallback_order if route.fallback_order else [b.name for b in app.config.backends if b.enabled]:
+            if backend_name in app.backends and app.backends[backend_name].status.healthy:
+                available_backends.append(app.backends[backend_name])
+        # 如果路由没有配置fallback_order，使用所有健康的后端
+        if not available_backends:
+            available_backends = [b for b in app.backends.values() if b.status.healthy]
+    else:
+        available_backends = find_backends_for_model(model_id, app.config, app.backends)
 
     if not available_backends:
         raise HTTPException(
             status_code=503,
-            detail=f"No healthy backend available for model: {model_id}"
+            detail=f"No healthy backend available for model: {raw_model}"
         )
 
     # 获取路由配置
-    route = app.config.routes[0] if app.config.routes else None
     strategy = route.strategy if route else "latency"
     fallback_order = route.fallback_order if route else []
     fallback_rules = route.fallback_rules if route else []
 
-    # 估算tokens（简单估算）
-    estimated_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+    # 估算tokens
+    estimated_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 4
 
-    # 选择后端（带速率限制检查和故障预判）
+    # 选择后端
     selected_backend = None
     tried_backends = []
 
-    # 首先尝试主选择策略
     for backend in available_backends:
         if backend in tried_backends:
             continue
-
-        # 检查速率限制
         if not await rate_limiter.can_request(backend.name, estimated_tokens):
-            logger.debug(f"Backend {backend.name} rate limited, trying next")
             tried_backends.append(backend)
             continue
-
-        # 检查是否接近限制（故障预判）
         if rate_limiter.is_near_limit(backend.name, threshold=0.8):
-            logger.debug(f"Backend {backend.name} near rate limit, considering fallback")
-            # 不立即跳过，但降低优先级
             tried_backends.append(backend)
             continue
-
         selected_backend = backend
         break
 
-    # 如果主选择失败，尝试回退规则
+    # 回退规则
     if not selected_backend and fallback_rules:
         for rule in fallback_rules:
             if rule.condition in ["rate_limit", "error"]:
@@ -101,7 +152,7 @@ async def chat_completions(request: Request):
             if selected_backend:
                 break
 
-    # 最后尝试回退顺序
+    # 回退顺序
     if not selected_backend and fallback_order:
         for name in fallback_order:
             if name in app.backends:
@@ -110,7 +161,7 @@ async def chat_completions(request: Request):
                     selected_backend = backend
                     break
 
-    # 如果还是没有，选择第一个可用的
+    # 最后选择
     if not selected_backend:
         for backend in available_backends:
             if backend not in tried_backends:
@@ -123,11 +174,20 @@ async def chat_completions(request: Request):
     # 获取实际模型名称
     backend_config = app.config.get_backend_by_name(selected_backend.name)
     actual_model = model_id
-    if backend_config:
+    if backend_config and model_id != "*":
         for m in backend_config.models:
             if m.id == model_id:
                 actual_model = m.name
                 break
+    elif backend_config and model_id == "*":
+        # 使用路由时，选择第一个启用的模型
+        for m in backend_config.models:
+            if m.enabled:
+                actual_model = m.name
+                break
+
+    # 提取请求参数
+    request_params = extract_request_params(body)
 
     # 获取速率限制许可
     await rate_limiter.acquire(selected_backend.name, estimated_tokens)
@@ -137,7 +197,7 @@ async def chat_completions(request: Request):
     try:
         if stream:
             return StreamingResponse(
-                stream_chat_completion(selected_backend, actual_model, messages, body, start_time),
+                stream_chat_completion(selected_backend, actual_model, messages, request_params, start_time),
                 media_type="text/event-stream"
             )
         else:
@@ -145,35 +205,31 @@ async def chat_completions(request: Request):
                 model=actual_model,
                 messages=messages,
                 stream=False,
-                temperature=body.get("temperature"),
-                max_tokens=body.get("max_tokens"),
-                top_p=body.get("top_p")
+                **request_params
             )
 
             latency = time.time() - start_time
             tokens = result.get("usage", {}).get("total_tokens", 0)
-            await stats.record(model_id, selected_backend.name, tokens, latency, True)
+            await stats.record(raw_model, selected_backend.name, tokens, latency, True)
 
             return result
 
     except Exception as e:
         latency = time.time() - start_time
-        await stats.record(model_id, selected_backend.name, 0, latency, False)
+        await stats.record(raw_model, selected_backend.name, 0, latency, False)
         logger.error(f"Chat completion error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         rate_limiter.release(selected_backend.name)
 
 
-async def stream_chat_completion(backend, model: str, messages: List[Dict], body: Dict, start_time: float):
+async def stream_chat_completion(backend, model: str, messages: List[Dict], params: Dict, start_time: float):
     """流式响应"""
     try:
         async for chunk in backend.chat_completion_stream(
             model=model,
             messages=messages,
-            temperature=body.get("temperature"),
-            max_tokens=body.get("max_tokens"),
-            top_p=body.get("top_p")
+            **params
         ):
             yield f"data: {json.dumps(chunk)}\n\n"
 

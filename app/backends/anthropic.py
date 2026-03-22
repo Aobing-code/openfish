@@ -122,6 +122,24 @@ class AnthropicBackend(BaseBackend):
             if kwargs.get("top_p") is not None:
                 payload["top_p"] = kwargs["top_p"]
 
+            # Anthropic支持tools
+            if kwargs.get("tools"):
+                # 转换OpenAI tools格式为Anthropic格式
+                anthropic_tools = []
+                for tool in kwargs["tools"]:
+                    if tool.get("type") == "function":
+                        func = tool.get("function", {})
+                        anthropic_tools.append({
+                            "name": func.get("name", ""),
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {})
+                        })
+                    else:
+                        anthropic_tools.append(tool)
+                payload["tools"] = anthropic_tools
+            if kwargs.get("tool_choice"):
+                payload["tool_choice"] = kwargs["tool_choice"]
+
             response = await client.post(
                 f"{self.url}/v1/messages",
                 json=payload
@@ -164,6 +182,23 @@ class AnthropicBackend(BaseBackend):
                 payload["system"] = system
             if kwargs.get("temperature") is not None:
                 payload["temperature"] = kwargs["temperature"]
+
+            # Anthropic支持tools
+            if kwargs.get("tools"):
+                anthropic_tools = []
+                for tool in kwargs["tools"]:
+                    if tool.get("type") == "function":
+                        func = tool.get("function", {})
+                        anthropic_tools.append({
+                            "name": func.get("name", ""),
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {})
+                        })
+                    else:
+                        anthropic_tools.append(tool)
+                payload["tools"] = anthropic_tools
+            if kwargs.get("tool_choice"):
+                payload["tool_choice"] = kwargs["tool_choice"]
 
             async with client.stream(
                 "POST",

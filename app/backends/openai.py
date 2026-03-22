@@ -50,12 +50,13 @@ class OpenAIBackend(BaseBackend):
                 "stream": False
             }
 
-            if kwargs.get("temperature") is not None:
-                payload["temperature"] = kwargs["temperature"]
-            if kwargs.get("max_tokens") is not None:
-                payload["max_tokens"] = kwargs["max_tokens"]
-            if kwargs.get("top_p") is not None:
-                payload["top_p"] = kwargs["top_p"]
+            # 透传所有支持的参数
+            for key in ["temperature", "max_tokens", "top_p", "frequency_penalty", 
+                        "presence_penalty", "stop", "n", "seed", "response_format",
+                        "tools", "tool_choice", "functions", "function_call",
+                        "logprobs", "top_logprobs"]:
+                if key in kwargs and kwargs[key] is not None:
+                    payload[key] = kwargs[key]
 
             response = await client.post(
                 f"{self.url}/chat/completions",
@@ -92,12 +93,12 @@ class OpenAIBackend(BaseBackend):
                 "stream": True
             }
 
-            if kwargs.get("temperature") is not None:
-                payload["temperature"] = kwargs["temperature"]
-            if kwargs.get("max_tokens") is not None:
-                payload["max_tokens"] = kwargs["max_tokens"]
-            if kwargs.get("top_p") is not None:
-                payload["top_p"] = kwargs["top_p"]
+            # 透传所有支持的参数
+            for key in ["temperature", "max_tokens", "top_p", "frequency_penalty",
+                        "presence_penalty", "stop", "n", "seed", "response_format",
+                        "tools", "tool_choice", "functions", "function_call"]:
+                if key in kwargs and kwargs[key] is not None:
+                    payload[key] = kwargs[key]
 
             async with client.stream(
                 "POST",

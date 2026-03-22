@@ -128,6 +128,39 @@ class GoogleBackend(BaseBackend):
             if kwargs.get("top_p") is not None:
                 payload["generationConfig"]["topP"] = kwargs["top_p"]
 
+            # Google Gemini支持function calling
+            if kwargs.get("tools"):
+                google_tools = []
+                for tool in kwargs["tools"]:
+                    if tool.get("type") == "function":
+                        func = tool.get("function", {})
+                        google_tools.append({
+                            "functionDeclarations": [{
+                                "name": func.get("name", ""),
+                                "description": func.get("description", ""),
+                                "parameters": func.get("parameters", {})
+                            }]
+                        })
+                    else:
+                        google_tools.append(tool)
+                payload["tools"] = google_tools
+            if kwargs.get("tool_choice"):
+                # 转换tool_choice
+                choice = kwargs["tool_choice"]
+                if choice == "auto":
+                    payload["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+                elif choice == "none":
+                    payload["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
+                elif choice == "any" or choice == "required":
+                    payload["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
+                elif isinstance(choice, dict) and choice.get("type") == "function":
+                    payload["toolConfig"] = {
+                        "functionCallingConfig": {
+                            "mode": "ANY",
+                            "allowedFunctionNames": [choice.get("function", {}).get("name", "")]
+                        }
+                    }
+
             url = f"{self.url}/v1beta/models/{model}:generateContent"
             if self.api_key:
                 url += f"?key={self.api_key}"
