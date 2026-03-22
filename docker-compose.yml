@@ -1,10 +1,10 @@
 version: "3.8"
 
 services:
-  openfish:
+  fishrouter:
     build: .
-    image: openfish:latest
-    container_name: openfish
+    image: fishrouter:latest
+    container_name: fishrouter
     ports:
       - "8080:8080"
     volumes:

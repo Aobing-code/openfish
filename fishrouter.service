@@ -1,13 +1,13 @@
 [Unit]
-Description=OpenFish - AI Model Router
+Description=FishRouter - AI Model Router
 After=network.target
 
 [Service]
 Type=simple
-User=openfish
-Group=openfish
-WorkingDirectory=/opt/openfish
-ExecStart=/opt/openfish/venv/bin/python -m app.main
+User=fishrouter
+Group=fishrouter
+WorkingDirectory=/opt/fishrouter
+ExecStart=/opt/fishrouter/venv/bin/python -m app.main
 Restart=always
 RestartSec=5
 StandardOutput=journal
