@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: aobing/openfish
+  IMAGE_NAME: aobingcode/openfish
 
 jobs:
   build-and-push:
